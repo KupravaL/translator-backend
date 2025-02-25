@@ -43,18 +43,22 @@ class Settings(BaseSettings):
     GOOGLE_PROJECT_ID: str = os.getenv("GOOGLE_PROJECT_ID", "")
     
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # Process CORS origins from environment variable
+        # Process CORS origins first, before pydantic validation
         cors_value = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000")
-        if cors_value.startswith("["):
+        
+        if cors_value and cors_value.startswith("["):
             # Try to parse as JSON
             import json
             try:
                 self.CORS_ORIGINS = json.loads(cors_value)
-            except:
-                self.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",")]
+            except json.JSONDecodeError:
+                # Fallback to comma-separated if JSON parsing fails
+                self.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
         else:
             # Handle as comma-separated string
-            self.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",")]
+            self.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
+            
+        # Initialize pydantic settings after processing CORS_ORIGINS
+        super().__init__(**kwargs)
 
 settings = Settings()
