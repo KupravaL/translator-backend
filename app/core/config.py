@@ -1,24 +1,22 @@
 import os
 import json
-from typing import List, Dict, Any
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
+from typing import List, Optional
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
+# Load environment variables first
 load_dotenv()
 
-# Declare default CORS origins for use in Settings class
+# Default values
 DEFAULT_CORS_ORIGINS = ["http://localhost:5173", "http://localhost:3000"]
 
-class Settings(BaseSettings):
-    # Disable env file handling (we already called load_dotenv)
-    model_config = SettingsConfigDict(env_file=None, extra='ignore')
-    
+
+class Settings(BaseModel):
     # API Settings
     API_V1_STR: str = "/api"
     API_BASE_URL: str = os.getenv("API_BASE_URL", "http://localhost:8000")
     
-    # CORS origins - This is set in the post_init_post_validate method
+    # CORS origins
     CORS_ORIGINS: List[str] = DEFAULT_CORS_ORIGINS
     
     # Authentication - Clerk
@@ -49,24 +47,24 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
     GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
     GOOGLE_PROJECT_ID: str = os.getenv("GOOGLE_PROJECT_ID", "")
-    
-    def model_post_init(self, __context: Dict[str, Any]) -> None:
-        """Process CORS_ORIGINS after model initialization."""
-        cors_value = os.getenv("CORS_ORIGINS")
-        if not cors_value:
-            return  # Use default CORS_ORIGINS
 
-        if cors_value.startswith("["):
-            # Try to parse as JSON
-            try:
-                self.CORS_ORIGINS = json.loads(cors_value)
-                return
-            except json.JSONDecodeError:
-                # Fall through to comma-separated parsing
-                pass
-                
-        # Parse as comma-separated string
-        self.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
 
-# Create settings instance
+# Create settings object with defaults
 settings = Settings()
+
+# Process CORS_ORIGINS separately from pydantic
+cors_value = os.getenv("CORS_ORIGINS")
+if cors_value:
+    # If string is empty, use defaults
+    if not cors_value.strip():
+        settings.CORS_ORIGINS = DEFAULT_CORS_ORIGINS
+    # Try JSON format
+    elif cors_value.startswith("["):
+        try:
+            settings.CORS_ORIGINS = json.loads(cors_value)
+        except json.JSONDecodeError:
+            # Fallback to comma-separated if JSON parsing fails
+            settings.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
+    # Use comma-separated format
+    else:
+        settings.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
