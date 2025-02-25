@@ -15,7 +15,7 @@ def check_and_init_tables():
     """Check if required tables exist and create them if needed."""
     # Get database URL from environment directly
     db_url = os.getenv("DATABASE_URL_DIRECT", 
-                       "postgresql://neondb_owner:npg_aE8CX0qBvTGi@ep-curly-union-a2yahj4n.eu-central-1.aws.neon.tech/neondb?sslmode=require")
+                       "postgresql://translator_user:WSgMhbWEZV5LK9gm4yQuAnjGDJN7iqMr@dpg-cuuu4hdds78s73b51ta0-a/translator_lh8q")
     
     # Ensure URL has the correct prefix
     if db_url.startswith('postgres://'):
