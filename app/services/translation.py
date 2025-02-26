@@ -69,7 +69,6 @@ class TranslationService:
         index_text = re.sub(r'1\.1\.141', '1.1.1.4.1', index_text)
         index_text = re.sub(r'1\.1\.1\.42', '1.1.1.4.2', index_text)
         
-        logger.debug(f"Normalized index from '{index_text}' to '{index_text}'")
         return index_text
 
     async def extract_from_image(self, image_bytes: bytes) -> str:
@@ -79,8 +78,7 @@ class TranslationService:
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
         start_time = time.time()
-        image_hash = hash(image_bytes)
-        logger.info(f"Starting image content extraction (ID: {image_hash})")
+        logger.info("Starting image content extraction")
         
         # Create temporary file
         img_path = None
@@ -158,8 +156,6 @@ Key Requirements:
 
 Analyze the content carefully and use the most appropriate structure for each section. Return only valid HTML."""
 
-            logger.info(f"Submitting image to Gemini for analysis (image ID: {image_hash})")
-            
             # Read image data directly from the file
             with open(img_path, 'rb') as f:
                 image_data = f.read()
@@ -167,13 +163,13 @@ Analyze the content carefully and use the most appropriate structure for each se
             # Close file handle and ensure garbage collection
             del f
             gc.collect()
-                
+            
+            logger.info(f"Sending image to Gemini for analysis")
+            
             response = self.gemini_model.generate_content(
                 contents=[prompt, {"mime_type": "image/jpeg", "data": image_data}],
                 generation_config={"temperature": 0.1}
             )
-            
-            logger.info(f"Received response from Gemini for image ID: {image_hash}")
             
             html_content = response.text.strip()
             html_content = html_content.replace('```html', '').replace('```', '').strip()
@@ -240,19 +236,19 @@ Analyze the content carefully and use the most appropriate structure for each se
             html_content = str(soup)
             
             if len(html_content) < 50 or '<' not in html_content:
-                logger.error(f"Invalid or insufficient content extracted from image (ID: {image_hash})")
+                logger.error("Invalid or insufficient content extracted from image")
                 raise TranslationError(
                     "Invalid or insufficient content extracted from image", 
                     "CONTENT_ERROR"
                 )
             
-            logger.info(f"Successfully extracted content from image (ID: {image_hash}), length: {len(html_content)} chars")
+            logger.info(f"Successfully extracted content from image, length: {len(html_content)} chars")
             logger.info(f"Image processing took {time.time() - start_time:.2f} seconds")
             
             return html_content
             
         except Exception as e:
-            logger.error(f"Gemini image processing error (ID: {image_hash}): {str(e)}")
+            logger.error(f"Gemini image processing error: {str(e)}")
             raise TranslationError(
                 f"Failed to process image: {str(e)}",
                 getattr(e, 'code', 'PROCESSING_ERROR')
@@ -267,7 +263,7 @@ Analyze the content carefully and use the most appropriate structure for each se
                             time.sleep(0.2)  # Small delay
                             os.close_fds()  # Try to close any open file descriptors
                             os.remove(img_path)
-                            logger.debug(f"Temporary image file deleted: {img_path}")
+                            logger.debug(f"Deleted temporary image file: {img_path}")
                             break
                         except Exception as e:
                             if attempt == 2:  # Last attempt
@@ -278,7 +274,7 @@ Analyze the content carefully and use the most appropriate structure for each se
     async def extract_page_content(self, pdf_bytes: bytes, page_index: int) -> str:
         """Extract content from a PDF page using Google Gemini."""
         if not self.gemini_model:
-            logger.error("Google API key not configured for PDF page extraction")
+            logger.error("Google API key not configured for PDF extraction")
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
         start_time = time.time()
@@ -292,17 +288,16 @@ Analyze the content carefully and use the most appropriate structure for each se
             # Open PDF with PyMuPDF directly from the buffer
             with fitz.open(stream=buffer, filetype="pdf") as doc:
                 if page_index >= len(doc):
-                    logger.warning(f"Page {page_index + 1} does not exist in document with {len(doc)} pages")
+                    logger.warning(f"Page {page_index + 1} does not exist")
                     return ''
                 
                 page = doc[page_index]
-                logger.info(f"Processing page {page_index + 1} - size: {page.rect.width}x{page.rect.height}")
                 
                 # Extract content with Gemini
-                html_content = await self._get_formatted_text_from_gemini_buffer(page, page_index)
+                html_content = await self._get_formatted_text_from_gemini_buffer(page)
                 
                 if not html_content or html_content.strip() == '':
-                    logger.warning(f"Empty or too short content extracted on page {page_index + 1}")
+                    logger.error(f"Empty or too short content on page {page_index + 1}")
                     return ''
                 
                 logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
@@ -324,18 +319,17 @@ Analyze the content carefully and use the most appropriate structure for each se
             # Force garbage collection
             gc.collect()
     
-    async def _get_formatted_text_from_gemini_buffer(self, page, page_index):
+    async def _get_formatted_text_from_gemini_buffer(self, page):
         """Use Gemini to analyze and extract formatted text with improved memory management"""
+        page_index = page.number
         page_start_time = time.time()
-        logger.info(f"Converting page {page_index + 1} to image for processing")
+        logger.info(f"Extracting formatted text from page {page_index + 1} using Gemini")
         
         # Create a pixmap without writing to disk
         pix = page.get_pixmap()
         
         # Convert pixmap to bytes in memory
         img_bytes = pix.tobytes(output="png")
-        img_size = len(img_bytes)
-        logger.info(f"Page {page_index + 1} converted to image ({img_size / 1024:.2f} KB)")
         
         try:
             prompt = """Analyze this document and convert it to properly formatted HTML with intelligent structure detection.
@@ -403,16 +397,10 @@ Key Requirements:
 
 Analyze the content carefully and use the most appropriate structure for each section. Return only valid HTML."""
 
-            logger.info(f"Submitting page {page_index + 1} to Gemini for analysis")
-            content_start_time = time.time()
-            
             response = self.gemini_model.generate_content(
                 contents=[prompt, {"mime_type": "image/png", "data": img_bytes}],
                 generation_config={"temperature": 0.1}
             )
-            
-            content_duration = time.time() - content_start_time
-            logger.info(f"Gemini completed analysis for page {page_index + 1} in {content_duration:.2f} seconds")
             
             html_content = response.text.strip()
             html_content = html_content.replace('```html', '').replace('```', '').strip()
@@ -510,6 +498,7 @@ Analyze the content carefully and use the most appropriate structure for each se
             
         start_time = time.time()
         logger.info(f"Starting translation of chunk {chunk_id} ({len(html_content)} chars) from {from_lang} to {to_lang}")
+        logger.info(f"Using API key: {settings.ANTHROPIC_API_KEY[:10]}...{settings.ANTHROPIC_API_KEY[-5:]}")
         
         last_error = None
         
@@ -537,8 +526,12 @@ Your entire response must be valid HTML that could be directly used in a webpage
                 logger.info(f"Sending chunk {chunk_id} to Claude for translation (attempt {attempt}/{retries})")
                 translation_start = time.time()
                 
+                # Use a more widely available model instead of claude-3-5-sonnet-20241022
+                model_to_use = "claude-3-5-sonnet-20241022"
+                logger.info(f"Using model: {model_to_use} for translation")
+                
                 response = self.claude_client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
+                    model=model_to_use,
                     max_tokens=4096,
                     system=system_message,
                     messages=[
@@ -572,10 +565,14 @@ Your entire response must be valid HTML that could be directly used in a webpage
                 
                 # If the response still begins with commentary, try to extract just the HTML
                 if not translated_text.strip().startswith('<'):
+                    logger.warning(f"Response doesn't start with HTML tag, attempting to extract HTML")
                     # Try to extract only the HTML portion by finding the first HTML tag
                     html_start = re.search(r'<\w+', translated_text)
                     if html_start:
+                        logger.info(f"Found HTML tag at position {html_start.start()}")
                         translated_text = translated_text[html_start.start():]
+                    else:
+                        logger.error(f"Failed to find any HTML tags in response")
                 
                 if len(translated_text) < 1:
                     logger.error(f"Empty translation result for chunk {chunk_id}")
@@ -584,6 +581,7 @@ Your entire response must be valid HTML that could be directly used in a webpage
                 # Validate that the result is proper HTML
                 if not translated_text.strip().startswith('<'):
                     logger.error(f"Translation result for chunk {chunk_id} is not valid HTML")
+                    logger.error(f"Raw output starts with: {translated_text[:100]}...")
                     raise TranslationError("Translation result is not valid HTML", "CONTENT_ERROR")
                 
                 logger.info(f"Successfully translated chunk {chunk_id}, length: {len(translated_text)} chars")
@@ -592,6 +590,8 @@ Your entire response must be valid HTML that could be directly used in a webpage
                 
             except Exception as e:
                 logger.error(f"Translation error for chunk {chunk_id} (attempt {attempt}/{retries}): {str(e)}")
+                logger.error(f"Error type: {type(e).__name__}")
+                logger.error(f"Error details: {repr(e)}")
                 last_error = e
                 
                 if attempt == retries:
