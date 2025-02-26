@@ -1,3 +1,5 @@
+# Updated auth.py with the duplicate /me/balance route removed
+
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Security
 from sqlalchemy.orm import Session
 from typing import Dict, Any
@@ -47,20 +49,8 @@ async def webhook_handler(request: Request, event: WebhookEvent, db: Session = D
     # Return success for other events we don't need to process
     return {"success": True, "message": "Event received"}
 
-@router.get("/me/balance")
-async def get_user_balance(user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Get current user's balance."""
-    balance = db.query(UserBalance).filter(UserBalance.user_id == user_id).first()
-    
-    if not balance:
-        raise HTTPException(status_code=404, detail="User balance not found")
-    
-    return {
-        "userId": balance.user_id,
-        "pagesBalance": balance.pages_balance,
-        "pagesUsed": balance.pages_used,
-        "lastUsed": balance.last_used.isoformat()
-    }
+# The /me/balance route has been removed from here since it's in balance.py
+# This resolves the route conflict
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/auth/token")
 

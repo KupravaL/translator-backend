@@ -1,6 +1,7 @@
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.api.routes import auth, documents, export, balance
 from app.core.config import settings
 from app.api.routes.google_auth import router as google_auth_router
@@ -12,7 +13,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS
+# Configure CORS - Important for frontend access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -21,19 +22,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 # Add session middleware
 app.add_middleware(
     SessionMiddleware,
     secret_key="your-secret-key-here",  # Use a secure key in production
 )
 
-# Include routers
+# Important: Order matters for routes
+# Include balance router first to ensure its /me/balance endpoint takes precedence
 app.include_router(balance.router, prefix="/api/balance", tags=["Balance"])
+# Then include other routers
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
 app.include_router(export.router, prefix="/api/export", tags=["Export"])
-
 app.include_router(google_auth_router)
 
 # Add middleware to set security headers
@@ -49,13 +50,31 @@ async def add_security_headers(request: Request, call_next):
     
     return response
 
+# Exception handler for authentication errors
+@app.exception_handler(401)
+async def unauthorized_exception_handler(request: Request, exc):
+    return JSONResponse(
+        status_code=401,
+        content={"detail": str(exc)},
+    )
+
 @app.get("/")
 async def root():
     return {"message": "Welcome to DocTranslate API"}
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "cors_origins": settings.CORS_ORIGINS,
+        "clerk_issuer": settings.CLERK_ISSUER_URL
+    }
+
+# Debug endpoint to check CORS configuration
+@app.options("/debug-cors")
+async def debug_cors():
+    return {}
 
 if __name__ == "__main__":
     # Use an absolute path to the module
