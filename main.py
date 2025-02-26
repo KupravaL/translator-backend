@@ -2,16 +2,65 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from app.api.routes import auth, documents, export, balance
 from app.core.config import settings
 from app.api.routes.google_auth import router as google_auth_router
 from starlette.middleware.sessions import SessionMiddleware
+import asyncio
+import time
+
+class TimeoutMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        # Set timeout based on path
+        path = request.url.path
+        if "/api/documents/status/" in path:
+            timeout = settings.STATUS_CHECK_TIMEOUT
+        elif "/api/documents/translate" in path:
+            timeout = settings.TRANSLATION_TIMEOUT
+        else:
+            timeout = settings.DEFAULT_TIMEOUT
+            
+        # Create a task for the request processing
+        try:
+            request_task = asyncio.create_task(call_next(request))
+            response = await asyncio.wait_for(request_task, timeout=timeout)
+            return response
+        except asyncio.TimeoutError:
+            # If it's a status check, return a default response instead of an error
+            if "/api/documents/status/" in path:
+                process_id = path.split("/")[-1]
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "processId": process_id,
+                        "status": "pending",
+                        "progress": 0,
+                        "currentPage": 0,
+                        "totalPages": 0,
+                        "fileName": None,
+                        "isTimeout": True
+                    }
+                )
+            # For other requests, return a timeout error
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "Request timed out. The server is processing your request."}
+            )
+        except Exception as e:
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"An error occurred: {str(e)}"}
+            )
 
 app = FastAPI(
     title="Document Translation API",
     description="API for document translation service",
     version="1.0.0"
 )
+
+# Add the timeout middleware
+app.add_middleware(TimeoutMiddleware)
 
 # Configure CORS - Important for frontend access
 app.add_middleware(
@@ -29,9 +78,7 @@ app.add_middleware(
 )
 
 # Important: Order matters for routes
-# Include balance router first to ensure its /me/balance endpoint takes precedence
 app.include_router(balance.router, prefix="/api/balance", tags=["Balance"])
-# Then include other routers
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
 app.include_router(export.router, prefix="/api/export", tags=["Export"])

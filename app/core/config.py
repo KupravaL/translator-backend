@@ -48,6 +48,15 @@ class Settings(BaseModel):
     GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
     GOOGLE_PROJECT_ID: str = os.getenv("GOOGLE_PROJECT_ID", "")
 
+     # Add timeout settings
+    DEFAULT_TIMEOUT: int = 60         # Default timeout for general operations
+    STATUS_CHECK_TIMEOUT: int = 8     # Timeout for status check operations
+    TRANSLATION_TIMEOUT: int = 600    # Timeout for translation operations (10 minutes)
+    
+    # Database connection limits
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "10"))
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "20"))
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))
 
 # Create settings object with defaults
 settings = Settings()
