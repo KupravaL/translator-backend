@@ -67,8 +67,24 @@ async def translate_document(
                 "type": "VALIDATION_ERROR"
             }, status.HTTP_400_BAD_REQUEST
 
+        # Check API Keys early
+        if not settings.GOOGLE_API_KEY:
+            print("❌ GOOGLE_API_KEY not configured")
+            return {
+                "error": "Google API key not configured.",
+                "type": "CONFIG_ERROR"
+            }, status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+        if not settings.ANTHROPIC_API_KEY:
+            print("❌ ANTHROPIC_API_KEY not configured")
+            return {
+                "error": "Anthropic API key not configured.",
+                "type": "CONFIG_ERROR"
+            }, status.HTTP_500_INTERNAL_SERVER_ERROR
+            
         # Generate a unique process ID
         process_id = str(uuid.uuid4())
+        print(f"Generated process ID: {process_id}")
         
         # Create a translation progress record
         translation_progress = TranslationProgress(
@@ -85,6 +101,7 @@ async def translate_document(
         )
         db.add(translation_progress)
         db.commit()
+        print(f"Created translation progress record for {process_id}")
         
         # Create a temporary file for the uploaded content
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_name)[1]) as temp_file:
@@ -102,6 +119,7 @@ async def translate_document(
             file_type=file_type,
             file_name=file_name
         )
+        print(f"Added background task for process {process_id}")
         
         return {
             "success": True,
@@ -133,22 +151,45 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
         
         translation_progress.status = "in_progress"
         db.commit()
+        print(f"Updated status to in_progress for {process_id}")
         
         # Read the file content
         with open(temp_path, "rb") as f:
             file_content = f.read()
+        print(f"Read file content, size: {len(file_content)} bytes")
             
         try:
             # Process file based on its type
             if file_type in settings.SUPPORTED_IMAGE_TYPES:
-                html_content = await translation_service.extract_from_image(file_content)
-                translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                print(f"Starting image extraction with Gemini API...")
+                try:
+                    html_content = await translation_service.extract_from_image(file_content)
+                    print(f"Extraction successful, content length: {len(html_content)}")
+                except Exception as e:
+                    print(f"❌ Image extraction error: {str(e)}")
+                    translation_progress.status = "failed"
+                    translation_progress.progress = 0
+                    db.commit()
+                    return
+                
+                try:
+                    print(f"Starting translation with Claude API...")
+                    translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                    print(f"Translation successful, content length: {len(translated_content)}")
+                except Exception as e:
+                    print(f"❌ Translation error: {str(e)}")
+                    translation_progress.status = "failed"
+                    translation_progress.progress = 0
+                    db.commit()
+                    return
+                
                 content = translated_content
                 total_pages = 1
 
                 # Check balance
                 balance_check = balance_service.check_balance_for_content(db, user_id, content)
                 if not balance_check["hasBalance"]:
+                    print(f"❌ Insufficient balance for user {user_id}")
                     translation_progress.status = "failed"
                     translation_progress.progress = 0
                     db.commit()
@@ -158,13 +199,31 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                 translation_progress.totalPages = 1
                 translation_progress.currentPage = 1
                 translation_progress.progress = 100
-                db.add(TranslationChunk(processId=process_id, content=content, pageNumber=1))
+                
+                # Store translation chunk
+                try:
+                    chunk = TranslationChunk(processId=process_id, content=content, pageNumber=1)
+                    db.add(chunk)
+                    db.commit()
+                    print(f"Saved translation chunk for process {process_id}")
+                except Exception as e:
+                    print(f"❌ Failed to save translation chunk: {str(e)}")
+                    translation_progress.status = "failed"
+                    translation_progress.progress = 0
+                    db.commit()
+                    return
                 
                 # Deduct balance
-                deduction = balance_service.deduct_pages_for_translation(db, user_id, content)
+                try:
+                    deduction = balance_service.deduct_pages_for_translation(db, user_id, content)
+                    print(f"Balance deducted: {deduction}")
+                except Exception as e:
+                    print(f"❌ Failed to deduct balance: {str(e)}")
+                    # Continue anyway since the translation is already complete
                 
             else:  # PDF handling
                 # Process PDF file using document_processing_service's PDF handling
+                print(f"Processing PDF file...")
                 buffer = io.BytesIO(file_content)
                 
                 try:
@@ -174,6 +233,7 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                         total_pages = len(doc)
                         translation_progress.totalPages = total_pages
                         db.commit()
+                        print(f"PDF has {total_pages} pages")
 
                         # Check balance for total pages (assuming 1 page of content per PDF page)
                         estimated_pages = total_pages
@@ -184,6 +244,7 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                         }
                         
                         if not balance_check["hasBalance"]:
+                            print(f"❌ Insufficient balance for PDF with {total_pages} pages")
                             translation_progress.status = "failed"
                             translation_progress.progress = 0
                             db.commit()
@@ -198,27 +259,50 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                             translation_progress.progress = ((page_num + 1) / total_pages) * 100
                             db.commit()
 
-                            # Extract formatted content using the in-memory version
-                            html_content = await translation_service._get_formatted_text_from_gemini_buffer(page)
+                            # Extract formatted content
+                            try:
+                                print(f"Extracting content from page {page_num + 1}...")
+                                html_content = await translation_service._get_formatted_text_from_gemini_buffer(page)
+                                print(f"Extracted content length: {len(html_content) if html_content else 0}")
+                            except Exception as e:
+                                print(f"❌ Error extracting page {page_num + 1}: {str(e)}")
+                                html_content = f"<p>Error extracting content from page {page_num + 1}</p>"
 
                             if html_content and len(html_content) > 50:
-                                translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                                try:
+                                    print(f"Translating page {page_num + 1}...")
+                                    translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                                    print(f"Translated content length: {len(translated_content) if translated_content else 0}")
+                                except Exception as e:
+                                    print(f"❌ Error translating page {page_num + 1}: {str(e)}")
+                                    continue  # Skip this page and continue with the next
+                                
                                 if translated_content:
                                     translated_contents.append(translated_content)
-                                    db.add(TranslationChunk(processId=process_id, content=translated_content, pageNumber=page_num + 1))
-                                    db.commit()
+                                    try:
+                                        db.add(TranslationChunk(processId=process_id, content=translated_content, pageNumber=page_num + 1))
+                                        db.commit()
+                                        print(f"Saved translation chunk for page {page_num + 1}")
+                                    except Exception as e:
+                                        print(f"❌ Failed to save translation chunk: {str(e)}")
                                 else:
-                                    print(f"Translation failed for page {page_num + 1}")
+                                    print(f"❌ Empty translation result for page {page_num + 1}")
                             else:
-                                print(f"No valid content extracted from page {page_num + 1}")
+                                print(f"❌ Insufficient content extracted from page {page_num + 1}")
 
                         # Deduct balance
                         if translated_contents:
                             # Calculate actual pages based on content length
-                            combined_content = " ".join(translated_contents)
-                            deduction = balance_service.deduct_pages_for_translation(db, user_id, combined_content)
+                            try:
+                                combined_content = " ".join(translated_contents)
+                                deduction = balance_service.deduct_pages_for_translation(db, user_id, combined_content)
+                                print(f"Balance deducted: {deduction}")
+                            except Exception as e:
+                                print(f"❌ Failed to deduct balance: {str(e)}")
+                                # Continue anyway since the translation is already saved
                         else:
-                            translation_progress.status = "failed"
+                            print(f"❌ No translated content for PDF")
+                            translation_progress.status = "failed" 
                             db.commit()
                             return
                 finally:
@@ -230,6 +314,7 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                     gc.collect()
                 
             # Mark as completed
+            print(f"Marking translation as completed for {process_id}")
             translation_progress.status = "completed"
             translation_progress.progress = 100
             db.commit()
@@ -256,8 +341,9 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
         # Clean up temporary file
         try:
             os.unlink(temp_path)
-        except:
-            pass
+            print(f"Cleaned up temporary file {temp_path}")
+        except Exception as e:
+            print(f"❌ Failed to clean up temporary file: {str(e)}")
 
 @router.get("/status/{process_id}")
 async def get_translation_status(

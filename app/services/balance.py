@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session
 from app.models.balance import UserBalance
 from typing import Dict, Any
 import math
+from app.core.config import settings
 
 class BalanceService:
     @staticmethod
@@ -13,7 +14,7 @@ class BalanceService:
             # Create default balance
             balance = UserBalance(
                 user_id=user_id,
-                pages_balance=10,
+                pages_balance=100,  # Increased from 10 to 100 for testing 
                 pages_used=0
             )
             db.add(balance)
@@ -25,8 +26,8 @@ class BalanceService:
     @staticmethod
     def calculate_required_pages(content: str) -> int:
         """Calculate required pages based on content length."""
-        # Approximate page calculation (1500 characters per page)
-        chars_per_page = 1500
+        # Use a larger character count per page to reduce cost
+        chars_per_page = 3000  # Increased from 1500 to 3000
         required_pages = max(1, math.ceil(len(content) / chars_per_page))
         return required_pages
     
@@ -40,6 +41,17 @@ class BalanceService:
             "hasBalance": balance.pages_balance >= required_pages,
             "availablePages": balance.pages_balance,
             "requiredPages": required_pages
+        }
+    
+    @staticmethod
+    def check_balance_for_pages(db: Session, user_id: str, pages: int) -> Dict[str, Any]:
+        """Check if user has enough balance for given number of pages."""
+        balance = BalanceService.get_user_balance(db, user_id)
+        
+        return {
+            "hasBalance": balance.pages_balance >= pages,
+            "availablePages": balance.pages_balance,
+            "requiredPages": pages
         }
     
     @staticmethod
