@@ -54,7 +54,7 @@ async def translate_document(
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Initiate an asynchronous document translation with optimized handling for large files."""
+    """Initiate an asynchronous document translation with direct file handling."""
     try:
         start_time = time.time()
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -74,7 +74,7 @@ async def translate_document(
                 "type": "VALIDATION_ERROR"
             }
 
-        # Check API Keys early - these are fast checks that don't involve file processing
+        # Check API Keys early
         if not settings.GOOGLE_API_KEY:
             logger.error("GOOGLE_API_KEY not configured")
             return {
@@ -93,12 +93,11 @@ async def translate_document(
         process_id = str(uuid.uuid4())
         logger.info(f"Generated process ID: {process_id}")
         
-        # Create a translation progress record BEFORE reading the file
-        # This allows status checks to work even if file read times out
+        # Create a translation progress record
         translation_progress = TranslationProgress(
             processId=process_id,
             userId=current_user,
-            status="pending", # Initially "pending" before processing starts
+            status="in_progress", # Use in_progress instead of pending
             fileName=file_name,
             fromLang=from_lang,
             toLang=to_lang,
@@ -111,21 +110,51 @@ async def translate_document(
         db.commit()
         logger.info(f"Created translation progress record for {process_id}")
         
-        # Add file processing and translation to background
-        background_tasks.add_task(
-            process_file_upload_and_translate,
-            file=file,
-            process_id=process_id,
-            from_lang=from_lang,
-            to_lang=to_lang,
-            user_id=current_user,
-            file_type=file_type,
-            file_name=file_name
-        )
+        # Read the file content directly here
+        try:
+            file_content = await file.read()
+            file_size = len(file_content)
+            logger.info(f"Read file content, size: {file_size / (1024 * 1024):.2f} MB")
+            
+            # Validate file size
+            if file_size > settings.MAX_FILE_SIZE:
+                logger.error(f"File too large: {file_size / (1024 * 1024):.2f} MB")
+                update_translation_status(db, process_id, "failed")
+                return {
+                    "error": f"File too large. Maximum size is {settings.MAX_FILE_SIZE / (1024 * 1024)}MB.",
+                    "type": "VALIDATION_ERROR"
+                }
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_name)[1]) as temp_file:
+                temp_file.write(file_content)
+                temp_path = temp_file.name
+                
+            logger.info(f"Saved file to temporary path: {temp_path}")
+            
+            # Schedule the translation in background
+            background_tasks.add_task(
+                process_document_translation,
+                temp_path=temp_path,
+                process_id=process_id,
+                from_lang=from_lang,
+                to_lang=to_lang,
+                user_id=current_user,
+                file_type=file_type,
+                file_name=file_name
+            )
+            
+        except Exception as file_error:
+            logger.error(f"Error processing file: {str(file_error)}", exc_info=True)
+            update_translation_status(db, process_id, "failed")
+            return {
+                "error": f"Failed to process file: {str(file_error)}",
+                "type": "FILE_ERROR"
+            }
+            
+        logger.info(f"Added background task for process {process_id}")
         
-        logger.info(f"Added background file processing task for process {process_id}")
-        
-        # Return quickly with the process ID, before file is fully processed
+        # Return quickly with the process ID
         duration = round((time.time() - start_time) * 1000)
         logger.info(f"Initial request processing completed in {duration}ms, background processing started")
         
@@ -133,7 +162,7 @@ async def translate_document(
             "success": True,
             "message": "Translation process initiated",
             "processId": process_id,
-            "status": "pending"
+            "status": "in_progress"
         }
         
     except Exception as e:
@@ -142,84 +171,6 @@ async def translate_document(
             "error": f"Failed to initiate translation: {str(e)}",
             "type": "SYSTEM_ERROR"
         }
-
-# New helper function to handle file upload and start translation processing
-async def process_file_upload_and_translate(
-    file: UploadFile,
-    process_id: str,
-    from_lang: str,
-    to_lang: str,
-    user_id: str,
-    file_type: str,
-    file_name: str
-):
-    """Handle file upload and start translation in the background to prevent timeouts."""
-    start_time = time.time()
-    logger.info(f"Starting background file processing for {process_id}")
-    
-    try:
-        # Read the file content
-        file_content = await file.read()
-        file_size = len(file_content)
-        logger.info(f"Read file content for {process_id}, size: {file_size / (1024 * 1024):.2f} MB")
-        
-        # Validate file size
-        if file_size > settings.MAX_FILE_SIZE:
-            logger.error(f"File too large: {file_size / (1024 * 1024):.2f} MB for {process_id}")
-            
-            # Update record to failed
-            db = SessionLocal()
-            try:
-                update_translation_status(db, process_id, "failed")
-            finally:
-                db.close()
-            
-            return
-        
-        # Create a temporary file for the uploaded content
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_name)[1]) as temp_file:
-            temp_file.write(file_content)
-            temp_path = temp_file.name
-        
-        logger.info(f"Saved file to temporary path: {temp_path} for {process_id}")
-        
-        # Start the actual translation process
-        try:
-            # Start the translation process
-            await process_document_translation(
-                temp_path=temp_path,
-                process_id=process_id,
-                from_lang=from_lang,
-                to_lang=to_lang,
-                user_id=user_id,
-                file_type=file_type,
-                file_name=file_name
-            )
-        except Exception as e:
-            logger.error(f"Error during translation processing for {process_id}: {str(e)}", exc_info=True)
-            
-            # Update record to failed
-            db = SessionLocal()
-            try:
-                update_translation_status(db, process_id, "failed")
-            finally:
-                db.close()
-        
-        duration = time.time() - start_time
-        logger.info(f"Background file processing completed in {duration:.2f}s for {process_id}")
-        
-    except Exception as e:
-        logger.error(f"Error processing file for {process_id}: {str(e)}", exc_info=True)
-        
-        # Update record to failed
-        db = SessionLocal()
-        try:
-            update_translation_status(db, process_id, "failed")
-        except Exception as inner_e:
-            logger.error(f"Failed to update status to failed for {process_id}: {str(inner_e)}")
-        finally:
-            if db:
-                db.close()
     
 async def process_document_translation(temp_path, process_id, from_lang, to_lang, user_id, file_type, file_name):
     """Process document translation in the background with comprehensive logging and robust error handling."""
@@ -231,29 +182,6 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
     try:
         # Get a database session using a context manager for automatic cleanup
         db = SessionLocal()
-        
-        # Update progress to "in_progress" using a retry mechanism
-        for attempt in range(3):
-            try:
-                translation_progress = db.query(TranslationProgress).filter(
-                    TranslationProgress.processId == process_id
-                ).with_for_update(nowait=True).first()
-                
-                if not translation_progress:
-                    logger.error(f"Translation progress record not found for {process_id}")
-                    return
-                
-                translation_progress.status = "in_progress"
-                db.commit()
-                logger.info(f"Updated status to in_progress for {process_id}")
-                break
-            except Exception as e:
-                logger.error(f"Attempt {attempt+1}: Failed to update status: {str(e)}")
-                db.rollback()
-                await asyncio.sleep(1)
-                if attempt == 2:  # Last attempt
-                    logger.error(f"Failed to update translation status after multiple attempts")
-                    return
         
         # Read the file content with proper resource management
         file_content = None
@@ -283,9 +211,14 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                     logger.info(f"PDF has {total_pages} pages")
                     
                     # Update total pages in database
-                    translation_progress.totalPages = total_pages
-                    db.commit()
-                    logger.info(f"Updated total pages for {process_id}: {total_pages}")
+                    translation_progress = db.query(TranslationProgress).filter(
+                        TranslationProgress.processId == process_id
+                    ).first()
+                    
+                    if translation_progress:
+                        translation_progress.totalPages = total_pages
+                        db.commit()
+                        logger.info(f"Updated total pages for {process_id}: {total_pages}")
                 
                 # Process each page in the PDF
                 for page_index in range(total_pages):
@@ -381,10 +314,15 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                 logger.info(f"Processing image file for {process_id}")
                 # Update total pages to 1 for images
                 total_pages = 1
-                translation_progress.totalPages = total_pages
-                translation_progress.currentPage = 1
-                db.commit()
-                logger.info(f"Set total pages to 1 for image file")
+                translation_progress = db.query(TranslationProgress).filter(
+                    TranslationProgress.processId == process_id
+                ).first()
+                
+                if translation_progress:
+                    translation_progress.totalPages = total_pages
+                    translation_progress.currentPage = 1
+                    db.commit()
+                    logger.info(f"Set total pages to 1 for image file")
                 
                 # Extract content from the image
                 logger.info(f"Extracting content from image ({len(file_content) / 1024:.2f} KB)")
