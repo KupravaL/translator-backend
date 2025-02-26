@@ -1,4 +1,7 @@
 import uvicorn
+import time
+import logging
+import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -8,48 +11,55 @@ from app.core.config import settings
 from app.api.routes.google_auth import router as google_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 import asyncio
-import time
-import logging
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] [API] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    handlers=[
+        logging.StreamHandler(),  # Log to console
+        logging.FileHandler("api.log")  # Also log to file
+    ]
 )
+
 logger = logging.getLogger("api")
 
 class TimeoutMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
-        # Set timeout based on path
         path = request.url.path
         method = request.method
         
         # Log the incoming request
         logger.info(f"Received {method} request for {path}")
         
-        if "/api/documents/status/" in path:
+        # Handle file uploads specially
+        if path == "/api/documents/translate" and method == "POST":
+            # Use a short timeout for the translation request - since we want to
+            # initiate the translation and return the process ID quickly, not wait
+            # for the entire translation to complete
+            timeout = 10  # 10 seconds for upload
+        elif "/api/documents/status/" in path:
             timeout = settings.STATUS_CHECK_TIMEOUT
-        elif "/api/documents/translate" in path and method == "POST":
-            # Use a shorter timeout for the initial translation request
-            # since we're using background tasks for processing
-            timeout = 15  # 15 seconds should be enough to receive the file and start background processing
         else:
             timeout = settings.DEFAULT_TIMEOUT
             
-        # Create a task for the request processing
         try:
+            # Execute the request with timeout
             request_task = asyncio.create_task(call_next(request))
             response = await asyncio.wait_for(request_task, timeout=timeout)
+            
+            # Log the completed request
             duration = time.time() - start_time
             logger.info(f"Completed {method} request for {path} in {duration:.2f}s")
+            
             return response
         except asyncio.TimeoutError:
             duration = time.time() - start_time
             logger.warning(f"Timeout after {duration:.2f}s for {method} request to {path}")
             
-            # If it's a status check, return a default response instead of an error
+            # For status check endpoints, return a default response
             if "/api/documents/status/" in path:
                 process_id = path.split("/")[-1]
                 return JSONResponse(
@@ -66,27 +76,28 @@ class TimeoutMiddleware(BaseHTTPMiddleware):
                 )
                 
             # For translation requests that timeout, return a specific message
-            if "/api/documents/translate" in path and method == "POST":
+            if path == "/api/documents/translate" and method == "POST":
                 return JSONResponse(
-                    status_code=202,  # Accepted - indicates the request is processing
+                    status_code=408,  # Request Timeout
                     content={
-                        "message": "Translation process initiated. Use the status endpoint to check progress.",
-                        "status": "pending",
-                        "processId": None  # Client will need to retry status check
+                        "success": False,
+                        "error": "The server timed out while processing the file. Your file might be too large or complex.",
+                        "type": "TIMEOUT_ERROR"
                     }
                 )
                 
             # For other requests, return a timeout error
             return JSONResponse(
-                status_code=503,
+                status_code=408,  # Request Timeout
                 content={"detail": "Request timed out. The server is processing your request."}
             )
         except Exception as e:
             duration = time.time() - start_time
             logger.error(f"Error after {duration:.2f}s for {method} request to {path}: {str(e)}")
+            
             return JSONResponse(
                 status_code=500,
-                content={"detail": f"An error occurred: {str(e)}"}
+                content={"detail": f"An internal server error occurred: {str(e)}"}
             )
 
 app = FastAPI(
@@ -150,6 +161,7 @@ async def health_check():
     return {
         "status": "healthy",
         "version": "1.0.0",
+        "environment": os.environ.get("ENVIRONMENT", "development"),
         "cors_origins": settings.CORS_ORIGINS,
         "clerk_issuer": settings.CLERK_ISSUER_URL
     }
