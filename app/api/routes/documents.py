@@ -2,6 +2,9 @@ import time
 import uuid
 import os
 import tempfile
+import io
+import gc
+import fitz
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -161,9 +164,70 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                 deduction = balance_service.deduct_pages_for_translation(db, user_id, content)
                 
             else:  # PDF handling
-                # Similar to existing PDF processing logic but with progress updates
-                # ...code for PDF processing...
-                pass
+                # Process PDF file using document_processing_service's PDF handling
+                buffer = io.BytesIO(file_content)
+                
+                try:
+                    # Open PDF directly from memory
+                    with fitz.open(stream=buffer, filetype="pdf") as doc:
+                        translated_contents = []
+                        total_pages = len(doc)
+                        translation_progress.totalPages = total_pages
+                        db.commit()
+
+                        # Check balance for total pages (assuming 1 page of content per PDF page)
+                        estimated_pages = total_pages
+                        balance_check = {
+                            "hasBalance": balance_service.get_user_balance(db, user_id).pages_balance >= estimated_pages,
+                            "availablePages": balance_service.get_user_balance(db, user_id).pages_balance,
+                            "requiredPages": estimated_pages
+                        }
+                        
+                        if not balance_check["hasBalance"]:
+                            translation_progress.status = "failed"
+                            translation_progress.progress = 0
+                            db.commit()
+                            return
+
+                        for page_num in range(total_pages):
+                            print(f"Processing page {page_num + 1}/{total_pages}")
+                            page = doc[page_num]
+
+                            # Update progress
+                            translation_progress.currentPage = page_num + 1
+                            translation_progress.progress = ((page_num + 1) / total_pages) * 100
+                            db.commit()
+
+                            # Extract formatted content using the in-memory version
+                            html_content = await translation_service._get_formatted_text_from_gemini_buffer(page)
+
+                            if html_content and len(html_content) > 50:
+                                translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                                if translated_content:
+                                    translated_contents.append(translated_content)
+                                    db.add(TranslationChunk(processId=process_id, content=translated_content, pageNumber=page_num + 1))
+                                    db.commit()
+                                else:
+                                    print(f"Translation failed for page {page_num + 1}")
+                            else:
+                                print(f"No valid content extracted from page {page_num + 1}")
+
+                        # Deduct balance
+                        if translated_contents:
+                            # Calculate actual pages based on content length
+                            combined_content = " ".join(translated_contents)
+                            deduction = balance_service.deduct_pages_for_translation(db, user_id, combined_content)
+                        else:
+                            translation_progress.status = "failed"
+                            db.commit()
+                            return
+                finally:
+                    # Ensure all resources are properly closed
+                    if 'buffer' in locals():
+                        buffer.close()
+                    
+                    # Force garbage collection
+                    gc.collect()
                 
             # Mark as completed
             translation_progress.status = "completed"
