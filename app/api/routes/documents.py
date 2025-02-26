@@ -41,6 +41,8 @@ class TranslationProgressResponse(BaseModel):
     createdAt: str
     updatedAt: str
 
+# Modified section in app/api/routes/documents.py
+
 @router.post("/translate", summary="Initiate document translation")
 async def translate_document(
     background_tasks: BackgroundTasks,
@@ -75,7 +77,10 @@ async def translate_document(
                 "error": f"Unsupported file type: {file_type}",
                 "type": "VALIDATION_ERROR" 
             }
-            
+        
+        # Read file content here in the request handler, before passing to background task
+        file_content = await file.read()
+        
         # Generate a unique process ID first
         process_id = str(uuid.uuid4())
         logger.info(f"Generated process ID: {process_id}")
@@ -99,9 +104,10 @@ async def translate_document(
         logger.info(f"Created translation record: {process_id}")
         
         # Schedule file processing in background
+        # Pass file_content instead of file object
         background_tasks.add_task(
             handle_translation,
-            file=file,
+            file_content=file_content,  # Pass content instead of file object
             process_id=process_id,
             from_lang=from_lang,
             to_lang=to_lang,
@@ -128,8 +134,9 @@ async def translate_document(
             "type": "SYSTEM_ERROR"
         }
 
+# Modify handle_translation to accept file_content instead of file
 async def handle_translation(
-    file: UploadFile, 
+    file_content: bytes,  # Changed from file: UploadFile
     process_id: str, 
     from_lang: str, 
     to_lang: str, 
@@ -140,7 +147,6 @@ async def handle_translation(
     """Primary background task that handles file reading and translation."""
     start_time = time.time()
     logger.info(f"[BG TASK] Starting file processing for {process_id}")
-    file_content = None
     temp_file_path = None
     db = None
     
@@ -148,7 +154,7 @@ async def handle_translation(
         # First establish database connection
         db = SessionLocal()
         
-        # Now read the file
+        # Now process the file
         try:
             # First update status to processing
             progress = db.query(TranslationProgress).filter(
@@ -163,9 +169,7 @@ async def handle_translation(
             db.commit()
             logger.info(f"[BG TASK] Updated status to in_progress: {process_id}")
             
-            # Reset file position and read it
-            await file.seek(0)
-            file_content = await file.read()
+            # No need to read file again, it's already in file_content
             
             # Validate file
             file_size = len(file_content)
@@ -227,6 +231,7 @@ async def handle_translation(
         duration = time.time() - start_time
         logger.info(f"[BG TASK] Background task completed in {duration:.2f}s for {process_id}")
 
+        
 async def translate_document_content(
     process_id: str,
     file_content: bytes,
