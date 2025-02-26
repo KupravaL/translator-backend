@@ -1,8 +1,11 @@
 import time
+import uuid
+import os
+import tempfile
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from app.core.database import get_db
+from app.core.database import get_db, SessionLocal
 from app.core.auth import get_current_user
 from app.services.document_processing import document_processing_service
 from app.services.translation import translation_service, TranslationError  # ✅ Import TranslationError
