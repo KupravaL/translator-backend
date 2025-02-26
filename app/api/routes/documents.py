@@ -375,7 +375,7 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
             print(f"[{request_time}] Cleaned up temporary file {temp_path}")
         except Exception as e:
             print(f"[{request_time}] ❌ Failed to clean up temporary file: {str(e)}")
-
+            
 @router.get("/status/{process_id}")
 async def get_translation_status(
     process_id: str,
