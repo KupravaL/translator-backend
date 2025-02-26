@@ -6,13 +6,14 @@ import io
 import gc
 import fitz
 import asyncio
+import logging
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks
 from sqlalchemy.orm import Session, load_only
 from typing import Optional, List
 from app.core.database import get_db, SessionLocal
 from app.core.auth import get_current_user
 from app.services.document_processing import document_processing_service
-from app.services.translation import translation_service, TranslationError  # ✅ Import TranslationError
+from app.services.translation import translation_service, TranslationError
 from app.services.balance import balance_service
 from app.models.translation import TranslationProgress, TranslationChunk
 from app.core.config import settings
@@ -20,6 +21,13 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from datetime import datetime
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] [API:Documents] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger("documents")
 
 router = APIRouter()
 
@@ -50,17 +58,17 @@ async def translate_document(
     try:
         start_time = time.time()
         request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{request_time}] Translation request received for file: {file.filename}, from {from_lang} to {to_lang}")
+        logger.info(f"Translation request received for file: {file.filename}, from {from_lang} to {to_lang}, user: {current_user}")
         
         # Get file info
         file_type = file.content_type.lower() if file.content_type else ""
         file_name = file.filename or "document"
 
-        print(f"[{request_time}] Processing file: {file_name}, type: {file_type}")
+        logger.info(f"Processing file: {file_name}, type: {file_type}")
 
         # Validate file type
         if file_type not in settings.SUPPORTED_IMAGE_TYPES + settings.SUPPORTED_DOC_TYPES:
-            print(f"[{request_time}] ❌ Unsupported file type: {file_type}")
+            logger.error(f"Unsupported file type: {file_type}")
             return {
                 "error": f"Unsupported file type: {file_type}",
                 "type": "VALIDATION_ERROR"
@@ -70,10 +78,10 @@ async def translate_document(
         file_content = await file.read()
         file_size = len(file_content)
         
-        print(f"[{request_time}] File size: {file_size / (1024 * 1024):.2f} MB")
+        logger.info(f"File size: {file_size / (1024 * 1024):.2f} MB")
         
         if file_size > settings.MAX_FILE_SIZE:
-            print(f"[{request_time}] ❌ File too large: {file_size / (1024 * 1024):.2f} MB")
+            logger.error(f"File too large: {file_size / (1024 * 1024):.2f} MB")
             return {
                 "error": f"File too large. Maximum size is {settings.MAX_FILE_SIZE / (1024 * 1024)}MB.",
                 "type": "VALIDATION_ERROR"
@@ -81,14 +89,14 @@ async def translate_document(
 
         # Check API Keys early
         if not settings.GOOGLE_API_KEY:
-            print(f"[{request_time}] ❌ GOOGLE_API_KEY not configured")
+            logger.error("GOOGLE_API_KEY not configured")
             return {
                 "error": "Google API key not configured.",
                 "type": "CONFIG_ERROR"
             }
         
         if not settings.ANTHROPIC_API_KEY:
-            print(f"[{request_time}] ❌ ANTHROPIC_API_KEY not configured")
+            logger.error("ANTHROPIC_API_KEY not configured")
             return {
                 "error": "Anthropic API key not configured.",
                 "type": "CONFIG_ERROR"
@@ -96,7 +104,7 @@ async def translate_document(
             
         # Generate a unique process ID
         process_id = str(uuid.uuid4())
-        print(f"[{request_time}] Generated process ID: {process_id}")
+        logger.info(f"Generated process ID: {process_id}")
         
         # Create a translation progress record
         translation_progress = TranslationProgress(
@@ -113,14 +121,14 @@ async def translate_document(
         )
         db.add(translation_progress)
         db.commit()
-        print(f"[{request_time}] Created translation progress record for {process_id}")
+        logger.info(f"Created translation progress record for {process_id}")
         
         # Create a temporary file for the uploaded content
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_name)[1]) as temp_file:
             temp_file.write(file_content)
             temp_path = temp_file.name
         
-        print(f"[{request_time}] Saved file to temporary path: {temp_path}")
+        logger.info(f"Saved file to temporary path: {temp_path}")
         
         # Add translation task to background
         background_tasks.add_task(
@@ -133,10 +141,10 @@ async def translate_document(
             file_type=file_type,
             file_name=file_name
         )
-        print(f"[{request_time}] Added background task for process {process_id}")
+        logger.info(f"Added background task for process {process_id}")
         
         duration = round((time.time() - start_time) * 1000)
-        print(f"[{request_time}] Request processing completed in {duration}ms")
+        logger.info(f"Request processing completed in {duration}ms")
         
         return {
             "success": True,
@@ -146,17 +154,17 @@ async def translate_document(
         }
         
     except Exception as e:
-        print(f"❌ Error initiating translation: {str(e)}")
+        logger.error(f"Error initiating translation: {str(e)}", exc_info=True)
         return {
             "error": f"Failed to initiate translation: {str(e)}",
             "type": "SYSTEM_ERROR"
         }
     
 async def process_document_translation(temp_path, process_id, from_lang, to_lang, user_id, file_type, file_name):
-    """Process document translation in the background with improved error handling and resource management."""
+    """Process document translation in the background with comprehensive logging and robust error handling."""
     start_time = time.time()
-    request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{request_time}] 🚀 Starting background translation process for ID: {process_id}")
+    logger.info(f"Starting background translation process for ID: {process_id}")
+    logger.info(f"Process details - File: {file_name}, Type: {file_type}, From: {from_lang}, To: {to_lang}, User: {user_id}")
     db = None
     
     try:
@@ -171,19 +179,19 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                 ).with_for_update(nowait=True).first()
                 
                 if not translation_progress:
-                    print(f"[{request_time}] ❌ Translation progress record not found for {process_id}")
+                    logger.error(f"Translation progress record not found for {process_id}")
                     return
                 
                 translation_progress.status = "in_progress"
                 db.commit()
-                print(f"[{request_time}] Updated status to in_progress for {process_id}")
+                logger.info(f"Updated status to in_progress for {process_id}")
                 break
             except Exception as e:
-                print(f"[{request_time}] Attempt {attempt+1}: Failed to update status: {str(e)}")
+                logger.error(f"Attempt {attempt+1}: Failed to update status: {str(e)}")
                 db.rollback()
                 await asyncio.sleep(1)
                 if attempt == 2:  # Last attempt
-                    print(f"[{request_time}] ❌ Failed to update translation status after multiple attempts")
+                    logger.error(f"Failed to update translation status after multiple attempts")
                     return
         
         # Read the file content with proper resource management
@@ -191,22 +199,229 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
         try:
             with open(temp_path, "rb") as f:
                 file_content = f.read()
-            print(f"[{request_time}] Read file content, size: {len(file_content)} bytes")
+            logger.info(f"Read file content, size: {len(file_content) / 1024:.2f} KB")
         except Exception as e:
-            print(f"[{request_time}] ❌ Failed to read file: {str(e)}")
+            logger.error(f"Failed to read file: {str(e)}")
             update_translation_status(db, process_id, "failed")
             return
-            
-        # Process file based on its type with improved error handling...
-        # [Rest of your translation processing logic]
         
+        # Process file based on its type
+        total_pages = 0
+        translated_pages = []
+        
+        logger.info(f"Starting content extraction for {process_id}")
+        
+        # For PDF files
+        if file_type in settings.SUPPORTED_DOC_TYPES and 'pdf' in file_type:
+            try:
+                logger.info(f"Processing PDF document for {process_id}")
+                # Get PDF document information
+                buffer = io.BytesIO(file_content)
+                with fitz.open(stream=buffer, filetype="pdf") as doc:
+                    total_pages = len(doc)
+                    logger.info(f"PDF has {total_pages} pages")
+                    
+                    # Update total pages in database
+                    translation_progress.totalPages = total_pages
+                    db.commit()
+                    logger.info(f"Updated total pages for {process_id}: {total_pages}")
+                
+                # Process each page in the PDF
+                for page_index in range(total_pages):
+                    page_start_time = time.time()
+                    current_page = page_index + 1
+                    logger.info(f"Processing page {current_page}/{total_pages} for {process_id}")
+                    
+                    # Update current page in database
+                    translation_progress = db.query(TranslationProgress).filter(
+                        TranslationProgress.processId == process_id
+                    ).first()
+                    
+                    if not translation_progress or translation_progress.status == "failed":
+                        logger.warning(f"Translation was canceled or failed")
+                        return
+                    
+                    translation_progress.currentPage = current_page
+                    translation_progress.progress = int((current_page / total_pages) * 100)
+                    db.commit()
+                    logger.info(f"Updated progress for {process_id}: Page {current_page}/{total_pages} ({translation_progress.progress}%)")
+                    
+                    # Extract content from the page
+                    try:
+                        logger.info(f"Extracting content from page {current_page} for {process_id}")
+                        html_content = await translation_service.extract_page_content(file_content, page_index)
+                        
+                        if html_content and len(html_content.strip()) > 0:
+                            logger.info(f"Successfully extracted content from page {current_page} ({len(html_content)} chars)")
+                            
+                            # Translate the extracted content
+                            try:
+                                logger.info(f"Translating content from page {current_page} (from {from_lang} to {to_lang})")
+                                
+                                # Split content into chunks if it's too large
+                                if len(html_content) > 12000:
+                                    logger.info(f"Content too large ({len(html_content)} chars), splitting into chunks")
+                                    chunks = translation_service.split_content_into_chunks(html_content, 10000)
+                                    logger.info(f"Split into {len(chunks)} chunks")
+                                    
+                                    translated_chunks = []
+                                    for i, chunk in enumerate(chunks):
+                                        chunk_id = f"{process_id}-p{current_page}-c{i+1}"
+                                        logger.info(f"Translating chunk {i+1}/{len(chunks)} for page {current_page}")
+                                        translated_chunk = await translation_service.translate_chunk(
+                                            chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                        )
+                                        translated_chunks.append(translated_chunk)
+                                        logger.info(f"Successfully translated chunk {i+1}/{len(chunks)} for page {current_page}")
+                                    
+                                    # Combine translated chunks
+                                    translated_content = translation_service.combine_html_content(translated_chunks)
+                                    logger.info(f"Combined {len(translated_chunks)} translated chunks for page {current_page}")
+                                else:
+                                    logger.info(f"Translating content as a single chunk for page {current_page}")
+                                    chunk_id = f"{process_id}-p{current_page}"
+                                    translated_content = await translation_service.translate_chunk(
+                                        html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                    )
+                                    logger.info(f"Successfully translated content for page {current_page}")
+                                
+                                # Store translated content in database
+                                translation_chunk = TranslationChunk(
+                                    processId=process_id,
+                                    pageNumber=page_index,
+                                    content=translated_content
+                                )
+                                db.add(translation_chunk)
+                                db.commit()
+                                logger.info(f"Saved translation for page {current_page} to database")
+                                
+                                # Add to translated pages
+                                translated_pages.append(page_index)
+                                
+                                # Update progress
+                                page_time = time.time() - page_start_time
+                                logger.info(f"Completed page {current_page}/{total_pages} in {page_time:.2f} seconds")
+                            except Exception as e:
+                                logger.error(f"Error translating page {current_page}: {str(e)}", exc_info=True)
+                                # Continue to next page despite error
+                        else:
+                            logger.warning(f"Empty content extracted from page {current_page}")
+                    except Exception as e:
+                        logger.error(f"Error extracting content from page {current_page}: {str(e)}", exc_info=True)
+                        # Continue to next page despite error
+            except Exception as e:
+                logger.error(f"Error processing PDF: {str(e)}", exc_info=True)
+                update_translation_status(db, process_id, "failed")
+                return
+        
+        # For image files
+        elif file_type in settings.SUPPORTED_IMAGE_TYPES:
+            try:
+                logger.info(f"Processing image file for {process_id}")
+                # Update total pages to 1 for images
+                total_pages = 1
+                translation_progress.totalPages = total_pages
+                translation_progress.currentPage = 1
+                db.commit()
+                logger.info(f"Set total pages to 1 for image file")
+                
+                # Extract content from the image
+                logger.info(f"Extracting content from image ({len(file_content) / 1024:.2f} KB)")
+                html_content = await translation_service.extract_from_image(file_content)
+                
+                if html_content and len(html_content.strip()) > 0:
+                    logger.info(f"Successfully extracted content from image ({len(html_content)} chars)")
+                    
+                    # Translate the extracted content
+                    try:
+                        logger.info(f"Translating image content (from {from_lang} to {to_lang})")
+                        
+                        # Split content into chunks if it's too large
+                        if len(html_content) > 12000:
+                            logger.info(f"Content too large ({len(html_content)} chars), splitting into chunks")
+                            chunks = translation_service.split_content_into_chunks(html_content, 10000)
+                            logger.info(f"Split into {len(chunks)} chunks")
+                            
+                            translated_chunks = []
+                            for i, chunk in enumerate(chunks):
+                                chunk_id = f"{process_id}-img-c{i+1}"
+                                logger.info(f"Translating chunk {i+1}/{len(chunks)} for image")
+                                translated_chunk = await translation_service.translate_chunk(
+                                    chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                )
+                                translated_chunks.append(translated_chunk)
+                                logger.info(f"Successfully translated chunk {i+1}/{len(chunks)} for image")
+                            
+                            # Combine translated chunks
+                            translated_content = translation_service.combine_html_content(translated_chunks)
+                            logger.info(f"Combined {len(translated_chunks)} translated chunks for image")
+                        else:
+                            logger.info(f"Translating image content as a single chunk")
+                            chunk_id = f"{process_id}-img"
+                            translated_content = await translation_service.translate_chunk(
+                                html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                            )
+                            logger.info(f"Successfully translated image content")
+                        
+                        # Store translated content in database
+                        translation_chunk = TranslationChunk(
+                            processId=process_id,
+                            pageNumber=0,  # Single page for image
+                            content=translated_content
+                        )
+                        db.add(translation_chunk)
+                        db.commit()
+                        logger.info(f"Saved image translation to database")
+                        
+                        # Add to translated pages
+                        translated_pages.append(0)
+                        
+                    except Exception as e:
+                        logger.error(f"Error translating image content: {str(e)}", exc_info=True)
+                        update_translation_status(db, process_id, "failed")
+                        return
+                else:
+                    logger.error(f"Failed to extract content from image")
+                    update_translation_status(db, process_id, "failed")
+                    return
+            except Exception as e:
+                logger.error(f"Error processing image: {str(e)}", exc_info=True)
+                update_translation_status(db, process_id, "failed")
+                return
+        else:
+            logger.error(f"Unsupported file type: {file_type}")
+            update_translation_status(db, process_id, "failed")
+            return
+        
+        # Complete the translation process
+        if len(translated_pages) > 0:
+            logger.info(f"Translation completed for {process_id}: {len(translated_pages)}/{total_pages} pages translated")
+            
+            # Update translation progress to completed
+            translation_progress = db.query(TranslationProgress).filter(
+                TranslationProgress.processId == process_id
+            ).first()
+            
+            if translation_progress:
+                translation_progress.status = "completed"
+                translation_progress.progress = 100
+                translation_progress.currentPage = total_pages
+                db.commit()
+                logger.info(f"Updated status to completed for {process_id}")
+            
+            # Complete the process
+            total_duration = time.time() - start_time
+            logger.info(f"Translation process completed for {process_id} in {total_duration:.2f} seconds")
+        else:
+            logger.error(f"No pages were successfully translated for {process_id}")
+            update_translation_status(db, process_id, "failed")
     except Exception as e:
-        print(f"[{request_time}] ❌ Background task error: {str(e)}")
+        logger.error(f"Background task error: {str(e)}", exc_info=True)
         if db:
             try:
                 update_translation_status(db, process_id, "failed")
             except Exception as inner_e:
-                print(f"[{request_time}] ❌ Error updating translation status to failed: {str(inner_e)}")
+                logger.error(f"Error updating translation status to failed: {str(inner_e)}", exc_info=True)
     finally:
         # Clean up resources
         if db:
@@ -217,10 +432,10 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
             for attempt in range(3):
                 try:
                     os.unlink(temp_path)
-                    print(f"[{request_time}] Cleaned up temporary file {temp_path}")
+                    logger.info(f"Cleaned up temporary file {temp_path}")
                     break
                 except Exception as e:
-                    print(f"[{request_time}] Attempt {attempt+1}: Failed to clean up temporary file: {str(e)}")
+                    logger.warning(f"Attempt {attempt+1}: Failed to clean up temporary file: {str(e)}")
                     await asyncio.sleep(0.5)
 
 # Helper function for updating translation status
@@ -235,10 +450,11 @@ def update_translation_status(db, process_id, status, progress=0):
             translation_progress.status = status
             translation_progress.progress = progress if status == "failed" else translation_progress.progress
             db.commit()
+            logger.info(f"Updated translation status for {process_id} to {status}")
             return True
     except Exception as e:
         db.rollback()
-        print(f"Failed to update translation status: {str(e)}")
+        logger.error(f"Failed to update translation status: {str(e)}", exc_info=True)
         return False
     
 @router.get("/status/{process_id}")
@@ -249,9 +465,7 @@ async def get_translation_status(
 ):
     """Get status of a translation process."""
     start_time = time.time()
-    request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    print(f"[{request_time}] Received status check request for process ID: {process_id}, user: {current_user}")
+    logger.info(f"Received status check request for process ID: {process_id}, user: {current_user}")
     
     try:
         # Use a more efficient query with select columns to reduce data transfer
@@ -269,15 +483,11 @@ async def get_translation_status(
                 TranslationProgress.processId == process_id,
                 TranslationProgress.userId == current_user
             )
-            .execution_options(
-                timeout=5,  # 5 second query timeout
-                isolation_level="READ COMMITTED"  # Lower isolation level for status checks
-            )
             .first()
         )
         
         if not progress:
-            print(f"[{request_time}] ❌ Process ID not found: {process_id}")
+            logger.error(f"Process ID not found: {process_id}")
             raise HTTPException(status_code=404, detail="Translation process not found")
         
         response = {
@@ -290,12 +500,12 @@ async def get_translation_status(
         }
         
         duration = round((time.time() - start_time) * 1000)
-        print(f"[{request_time}] ✅ Status check completed in {duration}ms for {process_id}: status={progress.status}, progress={progress.progress}%, page {progress.currentPage}/{progress.totalPages}")
+        logger.info(f"Status check completed in {duration}ms for {process_id}: status={progress.status}, progress={progress.progress}%, page {progress.currentPage}/{progress.totalPages}")
         
         # If process is in_progress, add additional logging about background task
         if progress.status == "in_progress":
             last_update_seconds = (time.time() - progress.updatedAt.timestamp()) if progress.updatedAt else 0
-            print(f"[{request_time}] 🔄 Active translation - Last updated: {round(last_update_seconds)}s ago")
+            logger.info(f"Active translation - Last updated: {round(last_update_seconds)}s ago")
         
         return response
     except HTTPException:
@@ -303,7 +513,7 @@ async def get_translation_status(
     except Exception as e:
         # Log the error but don't expose details to client
         duration = round((time.time() - start_time) * 1000)
-        print(f"[{request_time}] ❌ Status check error after {duration}ms: {str(e)}")
+        logger.error(f"Status check error after {duration}ms: {str(e)}", exc_info=True)
         
         # Return a minimal successful response with default status
         # This prevents client-side 500 errors while still allowing polling to continue
@@ -324,9 +534,7 @@ async def get_translation_result(
 ):
     """Get the completed translation result."""
     start_time = time.time()
-    request_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    print(f"[{request_time}] Fetching translation result for process ID: {process_id}")
+    logger.info(f"Fetching translation result for process ID: {process_id}")
     
     # Find the translation progress
     progress = db.query(TranslationProgress).filter(
@@ -335,21 +543,21 @@ async def get_translation_result(
     ).first()
     
     if not progress:
-        print(f"[{request_time}] ❌ Process ID not found: {process_id}")
+        logger.error(f"Process ID not found: {process_id}")
         raise HTTPException(status_code=404, detail="Translation process not found")
     
     if progress.status != "completed":
-        print(f"[{request_time}] ❌ Translation not completed: {process_id}, status: {progress.status}")
+        logger.error(f"Translation not completed: {process_id}, status: {progress.status}")
         raise HTTPException(status_code=400, detail=f"Translation is not completed. Current status: {progress.status}")
     
     # Fetch all chunks for this translation
-    print(f"[{request_time}] Fetching translation chunks for process ID: {process_id}")
+    logger.info(f"Fetching translation chunks for process ID: {process_id}")
     chunks = db.query(TranslationChunk).filter(
         TranslationChunk.processId == process_id
     ).order_by(TranslationChunk.pageNumber).all()
     
     if not chunks:
-        print(f"[{request_time}] ❌ No translation chunks found for process ID: {process_id}")
+        logger.error(f"No translation chunks found for process ID: {process_id}")
         raise HTTPException(status_code=404, detail="Translation content not found")
     
     # Combine all chunks
@@ -357,7 +565,7 @@ async def get_translation_result(
     combined_content = translation_service.combine_html_content(contents)
     
     duration = round((time.time() - start_time) * 1000)
-    print(f"[{request_time}] ✅ Translation result fetched in {duration}ms: {len(chunks)} chunks, combined length: {len(combined_content)} chars")
+    logger.info(f"Translation result fetched in {duration}ms: {len(chunks)} chunks, combined length: {len(combined_content)} chars")
     
     return {
         "translatedText": combined_content,
