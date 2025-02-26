@@ -16,6 +16,7 @@ from app.services.balance import balance_service
 from app.models.translation import TranslationProgress, TranslationChunk
 from app.core.config import settings
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 router = APIRouter()
 
@@ -35,12 +36,12 @@ class TranslationProgressResponse(BaseModel):
 
 @router.post("/translate")
 async def translate_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     from_lang: str = Form(...),
     to_lang: str = Form(...),
     current_user: str = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    background_tasks: BackgroundTasks = BackgroundTasks()
+    db: Session = Depends(get_db)
 ):
     """Initiate an asynchronous document translation."""
     try:
@@ -55,7 +56,7 @@ async def translate_document(
             return {
                 "error": f"Unsupported file type: {file_type}",
                 "type": "VALIDATION_ERROR"
-            }, status.HTTP_400_BAD_REQUEST
+            }
 
         # Validate file size
         file_content = await file.read()
@@ -65,7 +66,7 @@ async def translate_document(
             return {
                 "error": f"File too large. Maximum size is {settings.MAX_FILE_SIZE / (1024 * 1024)}MB.",
                 "type": "VALIDATION_ERROR"
-            }, status.HTTP_400_BAD_REQUEST
+            }
 
         # Check API Keys early
         if not settings.GOOGLE_API_KEY:
@@ -73,14 +74,14 @@ async def translate_document(
             return {
                 "error": "Google API key not configured.",
                 "type": "CONFIG_ERROR"
-            }, status.HTTP_500_INTERNAL_SERVER_ERROR
+            }
         
         if not settings.ANTHROPIC_API_KEY:
             print("❌ ANTHROPIC_API_KEY not configured")
             return {
                 "error": "Anthropic API key not configured.",
                 "type": "CONFIG_ERROR"
-            }, status.HTTP_500_INTERNAL_SERVER_ERROR
+            }
             
         # Generate a unique process ID
         process_id = str(uuid.uuid4())
@@ -133,10 +134,11 @@ async def translate_document(
         return {
             "error": f"Failed to initiate translation: {str(e)}",
             "type": "SYSTEM_ERROR"
-        }, status.HTTP_500_INTERNAL_SERVER_ERROR
+        }
     
 async def process_document_translation(temp_path, process_id, from_lang, to_lang, user_id, file_type, file_name):
     """Process document translation in the background."""
+    print(f"Starting process_document_translation for {process_id}")
     db = SessionLocal()
     
     try:
@@ -154,8 +156,7 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
         print(f"Updated status to in_progress for {process_id}")
         
         # Read the file content
-        with open(temp_path, "rb") as f:
-            file_content = f.read()
+        file_content = await run_in_threadpool(lambda: open(temp_path, "rb").read())
         print(f"Read file content, size: {len(file_content)} bytes")
             
         try:
@@ -187,7 +188,7 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                 total_pages = 1
 
                 # Check balance
-                balance_check = balance_service.check_balance_for_content(db, user_id, content)
+                balance_check = await run_in_threadpool(lambda: balance_service.check_balance_for_content(db, user_id, content))
                 if not balance_check["hasBalance"]:
                     print(f"❌ Insufficient balance for user {user_id}")
                     translation_progress.status = "failed"
@@ -215,7 +216,7 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                 
                 # Deduct balance
                 try:
-                    deduction = balance_service.deduct_pages_for_translation(db, user_id, content)
+                    deduction = await run_in_threadpool(lambda: balance_service.deduct_pages_for_translation(db, user_id, content))
                     print(f"Balance deducted: {deduction}")
                 except Exception as e:
                     print(f"❌ Failed to deduct balance: {str(e)}")
@@ -224,11 +225,12 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
             else:  # PDF handling
                 # Process PDF file using document_processing_service's PDF handling
                 print(f"Processing PDF file...")
-                buffer = io.BytesIO(file_content)
                 
-                try:
-                    # Open PDF directly from memory
-                    with fitz.open(stream=buffer, filetype="pdf") as doc:
+                async def process_pdf():
+                    buffer = io.BytesIO(file_content)
+                    try:
+                        # Open PDF directly from memory
+                        doc = fitz.open(stream=buffer, filetype="pdf")
                         translated_contents = []
                         total_pages = len(doc)
                         translation_progress.totalPages = total_pages
@@ -237,18 +239,18 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
 
                         # Check balance for total pages (assuming 1 page of content per PDF page)
                         estimated_pages = total_pages
-                        balance_check = {
+                        balance_check = await run_in_threadpool(lambda: {
                             "hasBalance": balance_service.get_user_balance(db, user_id).pages_balance >= estimated_pages,
                             "availablePages": balance_service.get_user_balance(db, user_id).pages_balance,
                             "requiredPages": estimated_pages
-                        }
+                        })
                         
                         if not balance_check["hasBalance"]:
                             print(f"❌ Insufficient balance for PDF with {total_pages} pages")
                             translation_progress.status = "failed"
                             translation_progress.progress = 0
                             db.commit()
-                            return
+                            return None
 
                         for page_num in range(total_pages):
                             print(f"Processing page {page_num + 1}/{total_pages}")
@@ -295,7 +297,7 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                             # Calculate actual pages based on content length
                             try:
                                 combined_content = " ".join(translated_contents)
-                                deduction = balance_service.deduct_pages_for_translation(db, user_id, combined_content)
+                                deduction = await run_in_threadpool(lambda: balance_service.deduct_pages_for_translation(db, user_id, combined_content))
                                 print(f"Balance deducted: {deduction}")
                             except Exception as e:
                                 print(f"❌ Failed to deduct balance: {str(e)}")
@@ -304,14 +306,22 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
                             print(f"❌ No translated content for PDF")
                             translation_progress.status = "failed" 
                             db.commit()
-                            return
-                finally:
-                    # Ensure all resources are properly closed
-                    if 'buffer' in locals():
-                        buffer.close()
-                    
-                    # Force garbage collection
-                    gc.collect()
+                            return None
+                        
+                        return translated_contents
+                    finally:
+                        # Ensure all resources are properly closed
+                        if 'buffer' in locals():
+                            buffer.close()
+                        if 'doc' in locals():
+                            doc.close()
+                        
+                        # Force garbage collection
+                        gc.collect()
+
+                translated_contents = await process_pdf()
+                if translated_contents is None:
+                    return  # PDF processing failed
                 
             # Mark as completed
             print(f"Marking translation as completed for {process_id}")
@@ -334,13 +344,13 @@ async def process_document_translation(temp_path, process_id, from_lang, to_lang
             if translation_progress:
                 translation_progress.status = "failed"
                 db.commit()
-        except:
-            pass
+        except Exception as inner_e:
+            print(f"❌ Error updating translation status to failed: {str(inner_e)}")
     finally:
         db.close()
         # Clean up temporary file
         try:
-            os.unlink(temp_path)
+            await run_in_threadpool(lambda: os.unlink(temp_path))
             print(f"Cleaned up temporary file {temp_path}")
         except Exception as e:
             print(f"❌ Failed to clean up temporary file: {str(e)}")
@@ -361,7 +371,7 @@ async def get_translation_status(
     if not progress:
         raise HTTPException(status_code=404, detail="Translation process not found")
     
-    return {
+    response = {
         "processId": progress.processId,
         "status": progress.status,
         "progress": progress.progress,
@@ -369,6 +379,9 @@ async def get_translation_status(
         "totalPages": progress.totalPages,
         "fileName": progress.fileName
     }
+    
+    print(f"Status response for {process_id}: {response}")
+    return response
 
 @router.get("/result/{process_id}")
 async def get_translation_result(
