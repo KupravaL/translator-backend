@@ -18,23 +18,14 @@ engine = create_engine(
     max_overflow=20,           # Allow 20 connections beyond pool_size
     pool_timeout=30,           # Timeout waiting for a connection from pool
     pool_recycle=1800,         # Recycle connections every 30 minutes
-    pool_pre_ping=True,        # Verify connections before using them
-    # Query execution settings
-    execution_options={
-        "timeout": 60,         # Default query timeout (seconds)
-        "statement_timeout": 60000,  # Statement timeout in ms
-    }
+    pool_pre_ping=True         # Verify connections before using them
 )
 
 # Create session factory
 SessionLocal = sessionmaker(
     autocommit=False, 
     autoflush=False, 
-    bind=engine,
-    # Default execution options
-    execution_options={
-        "isolation_level": "READ COMMITTED"  # Default isolation level
-    }
+    bind=engine
 )
 
 # Create base class for models
