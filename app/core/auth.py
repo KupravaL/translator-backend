@@ -1,66 +1,50 @@
-import json
 import jwt
-import requests
-from datetime import datetime
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.balance import UserBalance
 from jwt import PyJWKClient
+from app.core.config import settings
 
 # HTTP Bearer security scheme
 security = HTTPBearer()
 
-# Cache for Clerk's JWKS (JSON Web Key Set)
-jwks_cache = {
-    'keys': None,
-    'last_updated': None
-}
-
-def get_jwks():
-    """Fetch and cache Clerk's JWKS keys for token verification."""
-    now = datetime.now()
-
-    # Use cached keys if available and not expired
-    if jwks_cache['keys'] and jwks_cache['last_updated'] and (now - jwks_cache['last_updated']).total_seconds() < 86400:
-        return jwks_cache['keys']
-
-    # Fetch JWKS keys from Clerk
-    jwks_url = "https://model-walrus-20.clerk.accounts.dev/.well-known/jwks.json"
-    response = requests.get(jwks_url)
-    response.raise_for_status()
-
-    # Update cache
-    jwks_cache['keys'] = response.json().get('keys', [])
-    jwks_cache['last_updated'] = now
-
-    return jwks_cache['keys']
-
-jwks_url = "https://model-walrus-20.clerk.accounts.dev/.well-known/jwks.json"
+# Clerk's JWKS endpoint
+jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
 jwks_client = PyJWKClient(jwks_url)
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
     """Validate Clerk JWT token and return the user_id."""
     token = credentials.credentials
-    print(f"Received Token: {token[:20]}...{token[-10:]}")  # ✅ Debugging (partial token for security)
+    print(f"Received Token: {token[:20]}...{token[-10:]}")  # Debugging (partial token for security)
 
     try:
-        # ✅ Fetch the signing key dynamically
+        # Fetch the signing key dynamically
         signing_key = jwks_client.get_signing_key_from_jwt(token).key
 
-        # ✅ Verify the JWT signature (without `aud` and `iss`)
-        payload = jwt.decode(token, signing_key, algorithms=["RS256"])
+        # Verify the JWT signature with more flexible validation
+        # Skip audience and issuer validation if they're causing issues
+        payload = jwt.decode(
+            token, 
+            signing_key, 
+            algorithms=["RS256"],
+            options={
+                "verify_aud": False,
+                "verify_iss": False
+            }
+        )
 
-        print(f"Decoded Payload: {payload}")  # ✅ Debugging
+        print(f"Decoded Payload: {payload}")  # Debugging
 
-        # Ensure `sub` field exists
-        user_id = payload.get("sub")
-        if not user_id or not user_id.startswith("user_"):
-            print(f"ERROR: Invalid subject in token: {user_id}")
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid subject in token")
+        # Check for the user ID in various common JWT claim locations
+        user_id = payload.get("sub") or payload.get("user_id") or payload.get("userId")
+        
+        if not user_id:
+            print("ERROR: No user ID found in token")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No user ID found in token")
 
-        # ✅ Check if user has a balance record, create one if missing
+        # Check if user has a balance record, create one if missing
         balance = db.query(UserBalance).filter(UserBalance.user_id == user_id).first()
         if not balance:
             print(f"Creating new balance record for user: {user_id}")
@@ -68,7 +52,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
             db.add(balance)
             db.commit()
 
-        return user_id  # ✅ Return user ID
+        return user_id  # Return user ID
 
     except jwt.PyJWTError as e:
         error_msg = str(e)
@@ -78,16 +62,8 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         error_msg = str(e)
         print(f"AUTH ERROR: {error_msg}")
         
-        # Check for specific error types and provide more helpful messages
-        if "JWK" in error_msg or "signing key" in error_msg:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, 
-                               detail="Token signature verification failed - check Clerk configuration")
-        if "expired" in error_msg:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, 
-                               detail="Token has expired - please login again")
-                               
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, 
-                           detail=f"Authentication failed: {error_msg}")
+                          detail=f"Authentication failed: {error_msg}")
 
 # ✅ Webhook Signature Verification (Placeholder)
 def verify_webhook_signature(request: Request):

@@ -29,10 +29,11 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(balance.router, prefix="/api/balance", tags=["Balance"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
 app.include_router(export.router, prefix="/api/export", tags=["Export"])
-app.include_router(balance.router, prefix="/api/balance", tags=["Balance"])
+
 app.include_router(google_auth_router)
 
 # Add middleware to set security headers
