@@ -703,7 +703,7 @@ Your entire response must be valid HTML that could be directly used in a webpage
                                 )
                                 translated_chunks.append(chunk_result)
                                 
-                            translated_content = TranslationService.combine_html_content(translated_chunks)
+                            translated_content = translation_service.combine_html_content(translated_chunks)
                         else:
                             chunk_id = f"{process_id}-p{current_page}"
                             translated_content = await self.translate_chunk(
@@ -752,7 +752,7 @@ Your entire response must be valid HTML that could be directly used in a webpage
                             )
                             translated_chunks.append(chunk_result)
                             
-                        translated_content = TranslationService.combine_html_content(translated_chunks)
+                        translated_content = translation_service.combine_html_content(translated_chunks)
                     else:
                         chunk_id = f"{process_id}-img"
                         translated_content = await self.translate_chunk(
@@ -836,38 +836,38 @@ Your entire response must be valid HTML that could be directly used in a webpage
                 db.rollback()
             return False
 
-        @staticmethod
-        def split_content_into_chunks(content: str, max_size: int) -> List[str]:
-            """Split content into chunks of maximum size."""
-            chunks = []
-            current_chunk = ''
-            
-            # Enhanced sentence splitting regex that preserves HTML tags
-            sentences = content.split('. ')
-            
-            for sentence in sentences:
-                # Add period back except for the last sentence
-                if sentence != sentences[-1]:
-                    sentence += '.'
-                    
-                if len(current_chunk) + len(sentence) > max_size:
-                    if current_chunk:
-                        chunks.append(current_chunk.strip())
-                    current_chunk = sentence
-                else:
-                    if current_chunk:
-                        current_chunk += ' ' + sentence
-                    else:
-                        current_chunk = sentence
-            
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-                
-            logger.info(f"Split content into {len(chunks)} chunks (max size: {max_size})")
-            return chunks
+    @staticmethod
+    def split_content_into_chunks(content: str, max_size: int) -> List[str]:
+        """Split content into chunks of maximum size."""
+        chunks = []
+        current_chunk = ''
         
-        @staticmethod
-        def combine_html_content(html_contents):
+        # Enhanced sentence splitting regex that preserves HTML tags
+        sentences = content.split('. ')
+        
+        for sentence in sentences:
+            # Add period back except for the last sentence
+            if sentence != sentences[-1]:
+                sentence += '.'
+                
+            if len(current_chunk) + len(sentence) > max_size:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                if current_chunk:
+                    current_chunk += ' ' + sentence
+                else:
+                    current_chunk = sentence
+        
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+            
+        logger.info(f"Split content into {len(chunks)} chunks (max size: {max_size})")
+        return chunks
+    
+    @staticmethod
+    def combine_html_content(html_contents):
             """Combine multiple HTML contents into a single document"""
             combined = "<div class='document'>\n"
             for content in html_contents:

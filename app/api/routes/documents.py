@@ -334,7 +334,7 @@ async def translate_document_content(
                                         )
                                         translated_chunks.append(chunk_result)
                                         
-                                    translated_content = TranslationService.combine_html_content(translated_chunks)
+                                    translated_content = translation_service.combine_html_content(translated_chunks)
                                 else:
                                     chunk_id = f"{process_id}-p{current_page}"
                                     translated_content = await translation_service.translate_chunk(
@@ -406,7 +406,7 @@ async def translate_document_content(
                                 )
                                 translated_chunks.append(chunk_result)
                                 
-                            translated_content = TranslationService.combine_html_content(translated_chunks)
+                            translated_content = translation_service.combine_html_content(translated_chunks)
                         else:
                             chunk_id = f"{process_id}-img"
                             translated_content = await translation_service.translate_chunk(
@@ -490,74 +490,65 @@ def update_translation_status(db, process_id, status, progress=0):
             db.rollback()
         return False
     
-@router.get("/status/{process_id}", summary="Check translation status")
-async def get_translation_status(
+@router.get("/result/{process_id}", summary="Get translation result")
+async def get_translation_result(
     process_id: str,
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
-    Get the status of a translation process.
+    Get the completed translation result.
     
-    Returns current progress, status, and page information.
+    Returns the translated content and metadata.
     """
     start_time = time.time()
-    logger.info(f"[STATUS] Status check for {process_id}")
+    logger.info(f"[RESULT] Fetching result for {process_id}")
     
-    try:
-        # Use optimized query with select columns only
-        progress = await run_in_threadpool(
-            lambda: db.query(TranslationProgress)
-            .options(load_only(
-                TranslationProgress.processId,
-                TranslationProgress.status,
-                TranslationProgress.progress,
-                TranslationProgress.currentPage,
-                TranslationProgress.totalPages,
-                TranslationProgress.fileName
-            ))
-            .filter(
-                TranslationProgress.processId == process_id,
-                TranslationProgress.userId == current_user
-            )
-            .first()
-        )
-        
-        if not progress:
-            logger.error(f"[STATUS] Process ID not found: {process_id}")
-            raise HTTPException(status_code=404, detail="Translation process not found")
-        
-        # Prepare response
-        response = {
-            "processId": progress.processId,
-            "status": progress.status,
-            "progress": progress.progress,
-            "currentPage": progress.currentPage,
-            "totalPages": progress.totalPages,
-            "fileName": progress.fileName
+    # Find the translation record
+    progress = db.query(TranslationProgress).filter(
+        TranslationProgress.processId == process_id,
+        TranslationProgress.userId == current_user
+    ).first()
+    
+    if not progress:
+        logger.error(f"[RESULT] Process ID not found: {process_id}")
+        raise HTTPException(status_code=404, detail="Translation process not found")
+    
+    if progress.status != "completed":
+        logger.error(f"[RESULT] Translation not completed: {process_id}, status: {progress.status}")
+        raise HTTPException(status_code=400, detail=f"Translation is not completed. Current status: {progress.status}")
+    
+    # Fetch translation chunks
+    logger.info(f"[RESULT] Fetching chunks for {process_id}")
+    chunks = db.query(TranslationChunk).filter(
+        TranslationChunk.processId == process_id
+    ).order_by(TranslationChunk.pageNumber).all()
+    
+    if not chunks:
+        logger.error(f"[RESULT] No chunks found for {process_id}")
+        raise HTTPException(status_code=404, detail="Translation content not found")
+    
+    # Combine chunks
+    contents = [chunk.content for chunk in chunks]
+    # Fixed: Use contents array instead of undefined translated_chunks
+    combined_content = translation_service.combine_html_content(contents)
+    
+    # Log completion
+    duration = round((time.time() - start_time) * 1000)
+    logger.info(f"[RESULT] Result fetched in {duration}ms: {len(chunks)} chunks, {len(combined_content)} chars")
+    
+    # Return result
+    return {
+        "translatedText": combined_content,
+        "direction": "rtl" if progress.toLang in ['fa', 'ar'] else "ltr",
+        "metadata": {
+            "originalFileName": progress.fileName,
+            "originalFileType": progress.fileType,
+            "processingId": process_id,
+            "fromLanguage": progress.fromLang,
+            "toLanguage": progress.toLang
         }
-        
-        # Log status check
-        duration = round((time.time() - start_time) * 1000)
-        logger.info(f"[STATUS] Status check completed in {duration}ms: status={progress.status}, progress={progress.progress}%")
-        
-        return response
-    except HTTPException:
-        raise
-    except Exception as e:
-        # Log error but return default status
-        logger.exception(f"[STATUS] Error checking status: {str(e)}")
-        
-        # Return minimal response to prevent client errors
-        return {
-            "processId": process_id,
-            "status": "pending",
-            "progress": 0,
-            "currentPage": 0,
-            "totalPages": 0,
-            "fileName": None,
-        }
-
+    }
 
 @router.get("/active", summary="List active translations")
 async def list_active_translations(
@@ -713,7 +704,7 @@ async def get_translation_result(
     
     # Combine chunks
     contents = [chunk.content for chunk in chunks]
-    combined_content = TranslationService.combine_html_content(translated_chunks)
+    combined_content = translation_service.combine_html_content(contents)
     
     # Log completion
     duration = round((time.time() - start_time) * 1000)
