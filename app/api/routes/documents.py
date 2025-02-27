@@ -14,7 +14,7 @@ from typing import Optional, List
 from app.core.database import get_db, SessionLocal
 from app.core.auth import get_current_user
 from app.services.document_processing import document_processing_service
-from app.services.translation import translation_service, TranslationError
+from app.services.translation import translation_service, TranslationError, TranslationService
 from app.services.balance import balance_service
 from app.models.translation import TranslationProgress, TranslationChunk
 from app.core.config import settings
@@ -334,7 +334,7 @@ async def translate_document_content(
                                         )
                                         translated_chunks.append(chunk_result)
                                         
-                                    translated_content = translation_service.combine_html_content(translated_chunks)
+                                    translated_content = TranslationService.combine_html_content(translated_chunks)
                                 else:
                                     chunk_id = f"{process_id}-p{current_page}"
                                     translated_content = await translation_service.translate_chunk(
@@ -406,7 +406,7 @@ async def translate_document_content(
                                 )
                                 translated_chunks.append(chunk_result)
                                 
-                            translated_content = translation_service.combine_html_content(translated_chunks)
+                            translated_content = TranslationService.combine_html_content(translated_chunks)
                         else:
                             chunk_id = f"{process_id}-img"
                             translated_content = await translation_service.translate_chunk(
@@ -713,7 +713,7 @@ async def get_translation_result(
     
     # Combine chunks
     contents = [chunk.content for chunk in chunks]
-    combined_content = translation_service.combine_html_content(contents)
+    combined_content = TranslationService.combine_html_content(translated_chunks)
     
     # Log completion
     duration = round((time.time() - start_time) * 1000)
