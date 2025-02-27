@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from anthropic import Anthropic
 from app.core.config import settings
+from app.models.translation import TranslationProgress, TranslationChunk
 from typing import List, Dict, Any, Optional
 import re
 from bs4 import BeautifulSoup, NavigableString
