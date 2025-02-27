@@ -12,6 +12,8 @@ from typing import List, Dict, Any, Optional
 import re
 from bs4 import BeautifulSoup, NavigableString
 import io
+import asyncio
+import nest_asyncio
 
 # Configure logging
 logging.basicConfig(
@@ -610,6 +612,230 @@ Your entire response must be valid HTML that could be directly used in a webpage
             f"Translation failed after all retries: {str(last_error)}",
             "TRANSLATION_ERROR"
         )
+
+    # Apply nest_asyncio to allow nested event loops
+# This helps when running async code from synchronous functions
+nest_asyncio.apply()
+
+def translate_document_content_sync(self, process_id, file_content, from_lang, to_lang, file_type, db):
+    """
+    Synchronous version of translate_document_content for the worker pool.
+    This wraps the async functions to work in a synchronous environment.
+    """
+    # Create a new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    try:
+        # Run the async translation function in the new loop
+        return loop.run_until_complete(
+            self._translate_document_content_sync_wrapper(
+                process_id, file_content, from_lang, to_lang, file_type, db
+            )
+        )
+    finally:
+        # Clean up the event loop
+        loop.close()
+
+async def _translate_document_content_sync_wrapper(self, process_id, file_content, from_lang, to_lang, file_type, db):
+    """Async wrapper implementation that calls the existing async methods."""
+    total_pages = 0
+    translated_pages = []
+    start_time = time.time()
+    
+    try:
+        # Handle PDFs
+        if file_type in settings.SUPPORTED_DOC_TYPES and 'pdf' in file_type:
+            # Get PDF page count
+            buffer = io.BytesIO(file_content)
+            with fitz.open(stream=buffer, filetype="pdf") as doc:
+                total_pages = len(doc)
+            
+            logger.info(f"[TRANSLATE] PDF has {total_pages} pages for {process_id}")
+            
+            # Update total pages
+            progress = db.query(TranslationProgress).filter(
+                TranslationProgress.processId == process_id
+            ).first()
+            
+            if progress:
+                progress.totalPages = total_pages
+                db.commit()
+            
+            # Process each page
+            for page_index in range(total_pages):
+                current_page = page_index + 1
+                
+                # Update progress
+                progress = db.query(TranslationProgress).filter(
+                    TranslationProgress.processId == process_id
+                ).first()
+                
+                if not progress or progress.status == "failed":
+                    logger.warning(f"[TRANSLATE] Process was canceled: {process_id}")
+                    return
+                    
+                progress.currentPage = current_page
+                progress.progress = int((current_page / total_pages) * 100)
+                db.commit()
+                
+                logger.info(f"[TRANSLATE] Processing page {current_page}/{total_pages} for {process_id}")
+                
+                # Extract content
+                html_content = await self.extract_page_content(file_content, page_index)
+                
+                if html_content and len(html_content.strip()) > 0:
+                    logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from page {current_page}")
+                    
+                    # Translate content
+                    translated_content = None
+                    
+                    # Split content if needed
+                    if len(html_content) > 12000:
+                        chunks = self.split_content_into_chunks(html_content, 10000)
+                        logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks")
+                        
+                        translated_chunks = []
+                        for i, chunk in enumerate(chunks):
+                            chunk_id = f"{process_id}-p{current_page}-c{i+1}"
+                            logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
+                            chunk_result = await self.translate_chunk(
+                                chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                            )
+                            translated_chunks.append(chunk_result)
+                            
+                        translated_content = self.combine_html_content(translated_chunks)
+                    else:
+                        chunk_id = f"{process_id}-p{current_page}"
+                        translated_content = await self.translate_chunk(
+                            html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                        )
+                    
+                    # Save translation
+                    translation_chunk = TranslationChunk(
+                        processId=process_id,
+                        pageNumber=page_index,
+                        content=translated_content
+                    )
+                    db.add(translation_chunk)
+                    db.commit()
+                    
+                    translated_pages.append(page_index)
+                    
+        # Handle images
+        elif file_type in settings.SUPPORTED_IMAGE_TYPES:
+            # Set total pages = 1 for images
+            total_pages = 1
+            progress = db.query(TranslationProgress).filter(
+                TranslationProgress.processId == process_id
+            ).first()
+            
+            if progress:
+                progress.totalPages = total_pages
+                progress.currentPage = 1
+                db.commit()
+            
+            # Extract content
+            html_content = await self.extract_from_image(file_content)
+            
+            if html_content and len(html_content.strip()) > 0:
+                # Translate content
+                translated_content = None
+                
+                # Split content if needed
+                if len(html_content) > 12000:
+                    chunks = self.split_content_into_chunks(html_content, 10000)
+                    translated_chunks = []
+                    for i, chunk in enumerate(chunks):
+                        chunk_id = f"{process_id}-img-c{i+1}"
+                        chunk_result = await self.translate_chunk(
+                            chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                        )
+                        translated_chunks.append(chunk_result)
+                        
+                    translated_content = self.combine_html_content(translated_chunks)
+                else:
+                    chunk_id = f"{process_id}-img"
+                    translated_content = await self.translate_chunk(
+                        html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                    )
+                
+                # Save translation
+                translation_chunk = TranslationChunk(
+                    processId=process_id,
+                    pageNumber=0,
+                    content=translated_content
+                )
+                db.add(translation_chunk)
+                db.commit()
+                
+                translated_pages.append(0)
+        else:
+            logger.error(f"[TRANSLATE] Unsupported file type: {file_type}")
+            self._update_translation_status_sync(db, process_id, "failed")
+            return
+            
+        # Complete translation process
+        if len(translated_pages) > 0:
+            logger.info(f"[TRANSLATE] Translation completed: {len(translated_pages)}/{total_pages} pages")
+            
+            # Update status to completed
+            progress = db.query(TranslationProgress).filter(
+                TranslationProgress.processId == process_id
+            ).first()
+            
+            if progress:
+                progress.status = "completed"
+                progress.progress = 100
+                progress.currentPage = total_pages
+                db.commit()
+                
+            # Log completion
+            duration = time.time() - start_time
+            logger.info(f"[TRANSLATE] Translation completed in {duration:.2f}s for {process_id}")
+            
+            return {
+                "success": True,
+                "totalPages": total_pages,
+                "translatedPages": len(translated_pages)
+            }
+        else:
+            logger.error(f"[TRANSLATE] No pages were translated for {process_id}")
+            self._update_translation_status_sync(db, process_id, "failed")
+            return {
+                "success": False,
+                "error": "No pages were translated"
+            }
+            
+    except Exception as e:
+        logger.exception(f"[TRANSLATE] Translation error: {str(e)}")
+        self._update_translation_status_sync(db, process_id, "failed")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+def _update_translation_status_sync(self, db, process_id, status, progress=0):
+    """Synchronous version of update_translation_status for the worker."""
+    try:
+        translation_progress = db.query(TranslationProgress).filter(
+            TranslationProgress.processId == process_id
+        ).first()
+        
+        if translation_progress:
+            translation_progress.status = status
+            translation_progress.progress = progress if status == "failed" else translation_progress.progress
+            db.commit()
+            logger.info(f"Updated status to {status} for {process_id}")
+            return True
+        else:
+            logger.error(f"No translation record found for {process_id}")
+            return False
+    except Exception as e:
+        logger.exception(f"Failed to update status to {status}: {str(e)}")
+        if 'db' in locals() and db:
+            db.rollback()
+        return False
 
     @staticmethod
     def split_content_into_chunks(content: str, max_size: int) -> List[str]:

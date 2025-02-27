@@ -21,6 +21,7 @@ from app.core.config import settings
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from datetime import datetime
+from app.core.worker import worker
 
 # Configure logger
 logger = logging.getLogger("documents")
@@ -45,7 +46,6 @@ class TranslationProgressResponse(BaseModel):
 
 @router.post("/translate", summary="Initiate document translation")
 async def translate_document(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     from_lang: str = Form(...),
     to_lang: str = Form(...),
@@ -58,7 +58,7 @@ async def translate_document(
     This endpoint:
     1. Creates a new translation record
     2. Returns a process ID immediately
-    3. Processes the file in a background task
+    3. Processes the file in a background task using dedicated worker pool
     
     The client should poll the /status/{process_id} endpoint to check progress.
     """
@@ -80,13 +80,28 @@ async def translate_document(
         
         # Read file content here in the request handler, before passing to background task
         file_content = await file.read()
+        file_size = len(file_content)
+        
+        # File size validation
+        if file_size == 0:
+            logger.error(f"Empty file received")
+            return {
+                "error": "File is empty",
+                "type": "VALIDATION_ERROR"
+            }
+            
+        if file_size > settings.MAX_FILE_SIZE:
+            logger.error(f"File too large: {file_size/1024/1024:.2f}MB")
+            return {
+                "error": f"File too large. Maximum size is {settings.MAX_FILE_SIZE/(1024*1024):.1f}MB.",
+                "type": "VALIDATION_ERROR"
+            }
         
         # Generate a unique process ID first
         process_id = str(uuid.uuid4())
         logger.info(f"Generated process ID: {process_id}")
         
         # Create a translation progress record in pending state
-        # This should happen first, before we start reading the file
         translation_progress = TranslationProgress(
             processId=process_id,
             userId=current_user,
@@ -103,11 +118,12 @@ async def translate_document(
         db.commit()
         logger.info(f"Created translation record: {process_id}")
         
-        # Schedule file processing in background
-        # Pass file_content instead of file object
-        background_tasks.add_task(
-            handle_translation,
-            file_content=file_content,  # Pass content instead of file object
+        # Submit translation task to the dedicated worker pool
+        # instead of using FastAPI's BackgroundTasks
+        worker.submit_task(
+            task_id=process_id,
+            func=handle_translation,
+            file_content=file_content,
             process_id=process_id,
             from_lang=from_lang,
             to_lang=to_lang,
@@ -120,11 +136,15 @@ async def translate_document(
         duration = round((time.time() - start_time) * 1000)
         logger.info(f"[TRANSLATE INIT] Completed in {duration}ms, returning {process_id}")
         
+        # Estimate translation time based on file size and type
+        estimated_time = estimate_translation_time(file_size, file_type)
+        
         return {
             "success": True,
             "message": "Translation process initiated",
             "processId": process_id,
-            "status": "pending"
+            "status": "pending",
+            "estimatedTimeSeconds": estimated_time
         }
         
     except Exception as e:
@@ -134,9 +154,9 @@ async def translate_document(
             "type": "SYSTEM_ERROR"
         }
 
-# Modify handle_translation to accept file_content instead of file
-async def handle_translation(
-    file_content: bytes,  # Changed from file: UploadFile
+# Define the translation function to be executed in the worker thread pool
+def handle_translation(
+    file_content: bytes,
     process_id: str, 
     from_lang: str, 
     to_lang: str, 
@@ -144,7 +164,7 @@ async def handle_translation(
     file_type: str, 
     file_name: str
 ):
-    """Primary background task that handles file reading and translation."""
+    """Process a translation task in the background worker."""
     start_time = time.time()
     logger.info(f"[BG TASK] Starting file processing for {process_id}")
     temp_file_path = None
@@ -154,46 +174,27 @@ async def handle_translation(
         # First establish database connection
         db = SessionLocal()
         
-        # Now process the file
+        # Update status to processing
+        progress = db.query(TranslationProgress).filter(
+            TranslationProgress.processId == process_id
+        ).first()
+        
+        if not progress:
+            logger.error(f"Translation record not found: {process_id}")
+            return
+            
+        progress.status = "in_progress"
+        db.commit()
+        logger.info(f"[BG TASK] Updated status to in_progress: {process_id}")
+        
+        # Process the translation
         try:
-            # First update status to processing
-            progress = db.query(TranslationProgress).filter(
-                TranslationProgress.processId == process_id
-            ).first()
-            
-            if not progress:
-                logger.error(f"Translation record not found: {process_id}")
-                return
-                
-            progress.status = "in_progress"
-            db.commit()
-            logger.info(f"[BG TASK] Updated status to in_progress: {process_id}")
-            
-            # No need to read file again, it's already in file_content
-            
-            # Validate file
+            # Log file info
             file_size = len(file_content)
-            logger.info(f"[BG TASK] Read file: {file_size/1024/1024:.2f}MB for {process_id}")
+            logger.info(f"[BG TASK] Processing file: {file_size/1024/1024:.2f}MB for {process_id}")
             
-            if file_size == 0:
-                logger.error(f"[BG TASK] Empty file received for {process_id}")
-                update_translation_status(db, process_id, "failed")
-                return
-                
-            if file_size > settings.MAX_FILE_SIZE:
-                logger.error(f"[BG TASK] File too large ({file_size/1024/1024:.2f}MB) for {process_id}")
-                update_translation_status(db, process_id, "failed")
-                return
-                
-            # Create temp file
-            with tempfile.NamedTemporaryFile(delete=False) as tf:
-                tf.write(file_content)
-                temp_file_path = tf.name
-                
-            logger.info(f"[BG TASK] Saved to temp file: {temp_file_path}")
-            
-            # Perform actual translation
-            await translate_document_content(
+            # Perform actual translation using the synchronous version
+            translation_result = translation_service.translate_document_content_sync(
                 process_id=process_id,
                 file_content=file_content,
                 from_lang=from_lang,
@@ -202,8 +203,12 @@ async def handle_translation(
                 db=db
             )
             
-        except Exception as read_error:
-            logger.exception(f"[BG TASK] File processing error: {str(read_error)}")
+            # The translation_result will contain status information
+            # or the synchronous method will have updated the status directly
+            logger.info(f"[BG TASK] Translation completed for {process_id}")
+            
+        except Exception as processing_error:
+            logger.exception(f"[BG TASK] Translation processing error: {str(processing_error)}")
             update_translation_status(db, process_id, "failed")
             
     except Exception as e:
@@ -219,19 +224,16 @@ async def handle_translation(
         if db:
             db.close()
             
-        # Remove temp file
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-                logger.info(f"[BG TASK] Cleaned up temp file: {temp_file_path}")
-            except Exception as cleanup_error:
-                logger.error(f"Failed to clean up temp file: {str(cleanup_error)}")
-                
         # Log task completion
         duration = time.time() - start_time
         logger.info(f"[BG TASK] Background task completed in {duration:.2f}s for {process_id}")
-
         
+        return {
+            "processId": process_id,
+            "status": "completed",
+            "duration": duration
+        }     
+
 async def translate_document_content(
     process_id: str,
     file_content: bytes,
