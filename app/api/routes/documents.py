@@ -43,8 +43,28 @@ class TranslationProgressResponse(BaseModel):
     updatedAt: str
 
 # Modified section in app/api/routes/documents.py
-
+def estimate_translation_time(file_size: int, file_type: str) -> int:
+    """
+    Estimate translation time based on file size and type.
+    Returns estimated seconds.
+    """
+    # Base time for processing overhead
+    base_time = 10
+    
+    # Estimate number of pages
+    estimated_pages = 1
+    if 'pdf' in file_type:
+        # Rough estimate: 100KB per page for PDFs
+        estimated_pages = max(1, int(file_size / (100 * 1024)))
+    elif file_type in settings.SUPPORTED_IMAGE_TYPES:
+        estimated_pages = 1
+    
+    # Average time per page based on logs: ~30-35 seconds
+    time_per_page = 35
+    
+    return base_time + (estimated_pages * time_per_page)
 @router.post("/translate", summary="Initiate document translation")
+
 async def translate_document(
     file: UploadFile = File(...),
     from_lang: str = Form(...),
