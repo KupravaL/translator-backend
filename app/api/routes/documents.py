@@ -8,7 +8,7 @@ import fitz
 import asyncio
 import logging
 import traceback  # Added for detailed error tracing
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks, Query
 from sqlalchemy.orm import Session, load_only
 from typing import Optional, List
 from app.core.database import get_db, SessionLocal
