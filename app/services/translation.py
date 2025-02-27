@@ -703,7 +703,7 @@ Your entire response must be valid HTML that could be directly used in a webpage
                                 )
                                 translated_chunks.append(chunk_result)
                                 
-                            translated_content = self.combine_html_content(translated_chunks)
+                            translated_content = TranslationService.combine_html_content(translated_chunks)
                         else:
                             chunk_id = f"{process_id}-p{current_page}"
                             translated_content = await self.translate_chunk(
@@ -752,7 +752,7 @@ Your entire response must be valid HTML that could be directly used in a webpage
                             )
                             translated_chunks.append(chunk_result)
                             
-                        translated_content = self.combine_html_content(translated_chunks)
+                        translated_content = TranslationService.combine_html_content(translated_chunks)
                     else:
                         chunk_id = f"{process_id}-img"
                         translated_content = await self.translate_chunk(
