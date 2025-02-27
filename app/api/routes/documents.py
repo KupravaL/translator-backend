@@ -535,7 +535,122 @@ async def get_translation_status(
             "totalPages": 0,
             "fileName": None,
         }
+
+
+@router.get("/active", summary="List active translations")
+async def list_active_translations(
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = Query(10, ge=1, le=50)
+):
+    """
+    Get a list of recent and active translations for the current user.
     
+    This helps to recover from timeouts by finding ongoing translations.
+    """
+    try:
+        # Find recent translations for this user
+        recent_translations = db.query(TranslationProgress).filter(
+            TranslationProgress.userId == current_user
+        ).order_by(
+            TranslationProgress.createdAt.desc()
+        ).limit(limit).all()
+        
+        # Convert to response format
+        translations = []
+        for translation in recent_translations:
+            translations.append({
+                "processId": translation.processId,
+                "status": translation.status,
+                "progress": translation.progress,
+                "currentPage": translation.currentPage,
+                "totalPages": translation.totalPages,
+                "fileName": translation.fileName,
+                "createdAt": translation.createdAt.isoformat() if translation.createdAt else None,
+                "updatedAt": translation.updatedAt.isoformat() if translation.updatedAt else None
+            })
+        
+        return {
+            "translations": translations
+        }
+    except Exception as e:
+        logger.exception(f"Error listing active translations: {str(e)}")
+        return {
+            "error": f"Failed to list translations: {str(e)}",
+            "translations": []
+        }
+
+@router.get("/find", summary="Find translation by file name")
+async def find_translation_by_file(
+    file_name: str,
+    status: Optional[str] = None,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Find a translation process by file name.
+    
+    This is used to recover from timeouts by finding the process ID
+    when the client didn't receive the initial response.
+    """
+    try:
+        # Build query to find translations by file name
+        query = db.query(TranslationProgress).filter(
+            TranslationProgress.userId == current_user,
+            TranslationProgress.fileName == file_name
+        )
+        
+        # Optionally filter by status
+        if status:
+            query = query.filter(TranslationProgress.status == status)
+            
+        # Order by most recent first
+        query = query.order_by(TranslationProgress.createdAt.desc())
+        
+        # Get the first match
+        translation = query.first()
+        
+        if not translation:
+            # If no exact match, try a fuzzy match on the file name
+            fuzzy_query = db.query(TranslationProgress).filter(
+                TranslationProgress.userId == current_user,
+                TranslationProgress.fileName.like(f"%{file_name.split('.')[0]}%")
+            )
+            
+            if status:
+                fuzzy_query = fuzzy_query.filter(TranslationProgress.status == status)
+                
+            fuzzy_query = fuzzy_query.order_by(TranslationProgress.createdAt.desc())
+            translation = fuzzy_query.first()
+            
+        if not translation:
+            # Still no match, return a 404
+            raise HTTPException(status_code=404, detail="Translation not found")
+        
+        # Return the translation details
+        return {
+            "processId": translation.processId,
+            "status": translation.status,
+            "progress": translation.progress,
+            "currentPage": translation.currentPage,
+            "totalPages": translation.totalPages,
+            "fileName": translation.fileName,
+            "fromLang": translation.fromLang,
+            "toLang": translation.toLang,
+            "createdAt": translation.createdAt.isoformat() if translation.createdAt else None,
+            "updatedAt": translation.updatedAt.isoformat() if translation.updatedAt else None,
+            "exactMatch": translation.fileName == file_name
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error finding translation: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to find translation: {str(e)}"
+        )
+
 @router.get("/result/{process_id}", summary="Get translation result")
 async def get_translation_result(
     process_id: str,
