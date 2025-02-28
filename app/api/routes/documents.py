@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from datetime import datetime
 from app.core.worker import worker
+import math 
 
 # Configure logger
 logger = logging.getLogger("documents")
