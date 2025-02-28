@@ -63,8 +63,8 @@ def estimate_translation_time(file_size: int, file_type: str) -> int:
     time_per_page = 35
     
     return base_time + (estimated_pages * time_per_page)
-@router.post("/translate", summary="Initiate document translation")
 
+@router.post("/translate", summary="Initiate document translation")
 async def translate_document(
     file: UploadFile = File(...),
     from_lang: str = Form(...),
@@ -117,6 +117,21 @@ async def translate_document(
                 "type": "VALIDATION_ERROR"
             }
         
+        # Calculate required pages
+        estimated_chars = file_size * 0.5  # Rough estimate of extractable text
+        required_pages = balance_service.calculate_required_pages(estimated_chars)
+        
+        # Check if user has enough balance
+        balance_check = balance_service.check_balance_for_pages(db, current_user, required_pages)
+        if not balance_check["hasBalance"]:
+            logger.error(f"Insufficient balance: required={required_pages}, available={balance_check['availablePages']}")
+            return {
+                "error": f"Insufficient balance. Required: {required_pages} pages, Available: {balance_check['availablePages']} pages",
+                "type": "INSUFFICIENT_BALANCE",
+                "requiredPages": required_pages,
+                "availablePages": balance_check["availablePages"]
+            }
+        
         # Generate a unique process ID first
         process_id = str(uuid.uuid4())
         logger.info(f"Generated process ID: {process_id}")
@@ -138,8 +153,21 @@ async def translate_document(
         db.commit()
         logger.info(f"Created translation record: {process_id}")
         
+        # Deduct pages from user balance immediately to prevent over-usage
+        deduction_result = balance_service.deduct_pages_for_translation(db, current_user, ' ' * (required_pages * 3000))
+        if not deduction_result["success"]:
+            logger.error(f"Failed to deduct pages: {deduction_result['error']}")
+            # Rollback the translation record if balance deduction fails
+            db.query(TranslationProgress).filter(TranslationProgress.processId == process_id).delete()
+            db.commit()
+            return {
+                "error": deduction_result["error"],
+                "type": "BALANCE_ERROR"
+            }
+        
+        logger.info(f"Deducted {required_pages} pages from user balance")
+        
         # Submit translation task to the dedicated worker pool
-        # instead of using FastAPI's BackgroundTasks
         worker.submit_task(
             task_id=process_id,
             func=handle_translation,
@@ -164,7 +192,9 @@ async def translate_document(
             "message": "Translation process initiated",
             "processId": process_id,
             "status": "pending",
-            "estimatedTimeSeconds": estimated_time
+            "estimatedTimeSeconds": estimated_time,
+            "pagesDeducted": required_pages,
+            "remainingBalance": deduction_result["remainingBalance"]
         }
         
     except Exception as e:
@@ -223,9 +253,18 @@ def handle_translation(
                 db=db
             )
             
-            # The translation_result will contain status information
-            # or the synchronous method will have updated the status directly
-            logger.info(f"[BG TASK] Translation completed for {process_id}")
+            # Check if translation was successful
+            if translation_result and translation_result.get("success") == True:
+                logger.info(f"[BG TASK] Translation completed successfully for {process_id}")
+                # Update status to completed
+                progress.status = "completed"
+                progress.progress = 100
+                progress.currentPage = progress.totalPages
+                db.commit()
+            else:
+                # Translation failed
+                logger.error(f"[BG TASK] Translation failed for {process_id}: {translation_result.get('error', 'Unknown error')}")
+                update_translation_status(db, process_id, "failed")
             
         except Exception as processing_error:
             logger.exception(f"[BG TASK] Translation processing error: {str(processing_error)}")
@@ -252,7 +291,7 @@ def handle_translation(
             "processId": process_id,
             "status": "completed",
             "duration": duration
-        }     
+        }
 
 async def translate_document_content(
     process_id: str,
@@ -469,13 +508,43 @@ async def translate_document_content(
         update_translation_status(db, process_id, "failed")
 
 def update_translation_status(db, process_id, status, progress=0):
-    """Update translation status with error handling."""
+    """Update translation status with error handling and refund for failed translations."""
     try:
         translation_progress = db.query(TranslationProgress).filter(
             TranslationProgress.processId == process_id
         ).first()
         
         if translation_progress:
+            # Check if status changed from in_progress to failed
+            if translation_progress.status == "in_progress" and status == "failed":
+                # If translation failed, we should refund the pages
+                try:
+                    # Estimate used pages based on file size or content
+                    # For simplicity, assume 1 page per document
+                    refund_pages = 1
+                    
+                    # Try to determine a more accurate refund amount if possible
+                    if translation_progress.totalPages > 0:
+                        # We have a better estimate from the document processing
+                        refund_pages = translation_progress.totalPages
+                    
+                    # Refund the pages
+                    logger.info(f"Refunding {refund_pages} pages for failed translation {process_id} to user {translation_progress.userId}")
+                    refund_result = balance_service.refund_pages_for_failed_translation(
+                        db, 
+                        translation_progress.userId, 
+                        refund_pages
+                    )
+                    
+                    if refund_result["success"]:
+                        logger.info(f"Successfully refunded {refund_pages} pages to user {translation_progress.userId}. New balance: {refund_result['newBalance']}")
+                    else:
+                        logger.error(f"Failed to refund pages: {refund_result.get('error', 'Unknown error')}")
+                        
+                except Exception as refund_error:
+                    logger.exception(f"Error refunding pages for failed translation {process_id}: {str(refund_error)}")
+            
+            # Update the status
             translation_progress.status = status
             translation_progress.progress = progress if status == "failed" else translation_progress.progress
             db.commit()
@@ -489,7 +558,7 @@ def update_translation_status(db, process_id, status, progress=0):
         if 'db' in locals() and db:
             db.rollback()
         return False
-    
+        
 @router.get("/status/{process_id}", summary="Check translation status")
 async def get_translation_status(
     process_id: str,

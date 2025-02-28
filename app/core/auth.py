@@ -1,7 +1,7 @@
 import json
 import jwt
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
@@ -11,8 +11,8 @@ from jwt import PyJWKClient
 
 from app.core.config import settings
 
-# HTTP Bearer security scheme
-security = HTTPBearer(auto_error=False)  # Changed to not auto error
+# HTTP Bearer security scheme with auto_error=True to enforce authentication
+security = HTTPBearer(auto_error=True)
 
 # Clerk's JWKS URL to fetch the public keys
 jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
@@ -28,57 +28,57 @@ def get_jwks():
     """Fetch and cache Clerk's JWKS keys for token verification."""
     now = datetime.now()
 
-    # Use cached keys if available and not expired
-    if jwks_cache['keys'] and jwks_cache['last_updated'] and (now - jwks_cache['last_updated']).total_seconds() < 86400:
+    # Use cached keys if available and not expired (cache for 12 hours)
+    if jwks_cache['keys'] and jwks_cache['last_updated'] and (now - jwks_cache['last_updated']).total_seconds() < 43200:  # 12 hours
         return jwks_cache['keys']
 
-    # Fetch JWKS keys from Clerk
-    try:
-        clerk_jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
-        print(f"Fetching JWKS from: {clerk_jwks_url}")
-        response = requests.get(clerk_jwks_url)
-        response.raise_for_status()
+    # Fetch JWKS keys from Clerk with retries
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            clerk_jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
+            response = requests.get(clerk_jwks_url, timeout=5)  # Add timeout
+            response.raise_for_status()
 
-        # Update cache
-        jwks_cache['keys'] = response.json().get('keys', [])
-        jwks_cache['last_updated'] = now
+            # Update cache
+            jwks_cache['keys'] = response.json().get('keys', [])
+            jwks_cache['last_updated'] = now
 
+            return jwks_cache['keys']
+        except Exception as e:
+            if attempt == max_retries - 1:  # Last attempt
+                print(f"Error fetching JWKS after {max_retries} attempts: {e}")
+            else:
+                print(f"JWKS fetch attempt {attempt+1} failed: {e}. Retrying...")
+                
+    # Return cached keys if available, even if expired (better than nothing)
+    if jwks_cache['keys']:
+        print("Using expired JWKS cache as fallback")
         return jwks_cache['keys']
-    except Exception as e:
-        print(f"Error fetching JWKS: {e}")
-        # Return empty list if fetch fails
-        return []
+        
+    # Return empty list if fetch fails and no cache is available
+    return []
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
     """Validate Clerk JWT token and return the user_id."""
-    # If no credentials, return None which triggers a 401
-    if not credentials:
-        print("No authentication credentials provided")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, 
-            detail="No authentication credentials provided"
-        )
-    
     token = credentials.credentials
-    print(f"Received Token (partially redacted): {token[:10]}...{token[-5:]}")
-
+    
     try:
-        # Fetch the signing key dynamically
+        # First try with the PyJWKClient
         try:
             signing_key = jwks_client.get_signing_key_from_jwt(token).key
         except Exception as e:
-            print(f"Failed to get signing key: {e}")
             # Fallback to manual key fetch
             jwks_keys = get_jwks()
             if not jwks_keys:
-                raise HTTPException(status_code=401, detail="Failed to retrieve JWKS keys")
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Failed to retrieve JWKS keys")
             
             # Decode token header to get the key ID
             unverified_header = jwt.get_unverified_header(token)
             key_id = unverified_header.get('kid')
             
             if not key_id:
-                raise HTTPException(status_code=401, detail="No key ID found in token header")
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No key ID found in token header")
             
             # Find the right key
             rsa_key = None
@@ -88,24 +88,13 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
                     break
             
             if not rsa_key:
-                raise HTTPException(status_code=401, detail="No matching key found")
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No matching key found")
             
             # Convert JWK to PEM format
             signing_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(rsa_key))
 
-        # Try to decode the token with various options
+        # Try to decode the token with relaxed options first
         try:
-            # First try with full validation
-            payload = jwt.decode(
-                token, 
-                signing_key, 
-                algorithms=["RS256"],
-                audience=settings.CLERK_AUDIENCE,
-                issuer=f"https://{settings.CLERK_ISSUER_URL}"
-            )
-        except jwt.PyJWTError as e:
-            print(f"Full validation failed, trying with relaxed options: {e}")
-            # Then try with more relaxed options
             payload = jwt.decode(
                 token,
                 signing_key,
@@ -115,30 +104,45 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
                     "verify_iss": False
                 }
             )
+        except jwt.PyJWTError as e:
+            print(f"Relaxed validation failed: {e}")
+            # Try with stricter validation
+            try:
+                payload = jwt.decode(
+                    token, 
+                    signing_key, 
+                    algorithms=["RS256"],
+                    audience=settings.CLERK_AUDIENCE,
+                    issuer=f"https://{settings.CLERK_ISSUER_URL}"
+                )
+            except jwt.PyJWTError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED, 
+                    detail=f"Token validation failed: {str(e)}"
+                )
 
-        print(f"Decoded Payload (partial): {str(payload)[:200]}...")
-
-        # Ensure `sub` field exists - this is standard in Clerk tokens
+        # Ensure `sub` field exists
         user_id = payload.get("sub")
         if not user_id:
-            print(f"No user_id found in token")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid subject in token")
 
         # Check if user has a balance record, create one if missing
-        balance = db.query(UserBalance).filter(UserBalance.user_id == user_id).first()
-        if not balance:
-            print(f"Creating new balance record for user: {user_id}")
-            balance = UserBalance(user_id=user_id, pages_balance=10, pages_used=0)
-            db.add(balance)
-            db.commit()
+        try:
+            balance = db.query(UserBalance).filter(UserBalance.user_id == user_id).first()
+            if not balance:
+                balance = UserBalance(user_id=user_id, pages_balance=10, pages_used=0)
+                db.add(balance)
+                db.commit()
+        except Exception as db_error:
+            print(f"Database error checking user balance: {db_error}")
+            # Continue without failing the request if DB error occurs
+            # The balance API will handle missing records
 
         return user_id  # Return user ID
 
     except jwt.ExpiredSignatureError:
-        print("Token expired")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has expired")
     except jwt.InvalidTokenError as e:
-        print(f"Invalid token: {e}")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {str(e)}")
     except Exception as e:
         error_msg = str(e)
@@ -155,7 +159,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, 
                           detail=f"Authentication failed: {error_msg}")
 
-# ✅ Webhook Signature Verification (Placeholder)
+# Webhook Signature Verification (Placeholder)
 def verify_webhook_signature(request: Request):
     """Verify that the webhook request came from Clerk."""
     try:
