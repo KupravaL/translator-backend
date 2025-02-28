@@ -117,9 +117,13 @@ async def translate_document(
                 "type": "VALIDATION_ERROR"
             }
         
-        # Calculate required pages
-        estimated_chars = file_size * 0.5  # Rough estimate of extractable text
-        required_pages = balance_service.calculate_required_pages(estimated_chars)
+        # Calculate required pages based on file size
+        # For PDFs, estimate 1 page per 100KB
+        # For images, use a flat rate of 1 page
+        required_pages = 1
+        if 'pdf' in file_type:
+            kb_size = file_size / 1024
+            required_pages = max(1, math.ceil(kb_size / 100))
         
         # Check if user has enough balance
         balance_check = balance_service.check_balance_for_pages(db, current_user, required_pages)
@@ -153,8 +157,13 @@ async def translate_document(
         db.commit()
         logger.info(f"Created translation record: {process_id}")
         
+        # Create dummy content string for deduction calculation
+        # We're not using the actual content length since we don't know it yet
+        # Instead, we're using the calculated required_pages directly
+        dummy_content = "X" * (required_pages * 3000)
+        
         # Deduct pages from user balance immediately to prevent over-usage
-        deduction_result = balance_service.deduct_pages_for_translation(db, current_user, ' ' * (required_pages * 3000))
+        deduction_result = balance_service.deduct_pages_for_translation(db, current_user, dummy_content)
         if not deduction_result["success"]:
             logger.error(f"Failed to deduct pages: {deduction_result['error']}")
             # Rollback the translation record if balance deduction fails
@@ -203,7 +212,6 @@ async def translate_document(
             "error": f"Failed to initiate translation: {str(e)}",
             "type": "SYSTEM_ERROR"
         }
-
 # Define the translation function to be executed in the worker thread pool
 def handle_translation(
     file_content: bytes,

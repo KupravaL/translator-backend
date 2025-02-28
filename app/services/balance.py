@@ -7,6 +7,11 @@ import logging
 from app.core.config import settings
 
 # Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] [Balance] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger("balance")
 
 class BalanceService:
@@ -41,11 +46,32 @@ class BalanceService:
             )
     
     @staticmethod
-    def calculate_required_pages(content: str) -> int:
-        """Calculate required pages based on content length."""
+    def calculate_required_pages(content) -> int:
+        """
+        Calculate required pages based on content.
+        
+        Args:
+            content: Can be either a string (for text content) or an integer/float (for estimated characters)
+            
+        Returns:
+            int: Number of pages required
+        """
         # Use a larger character count per page to reduce cost
         chars_per_page = 3000  # Increased from 1500 to 3000
-        required_pages = max(1, math.ceil(len(content) / chars_per_page))
+        
+        # Handle different input types
+        if isinstance(content, str):
+            # If content is a string, use its length
+            content_length = len(content)
+        elif isinstance(content, (int, float)):
+            # If content is a number, use it directly as the character count
+            content_length = content
+        else:
+            # For any other type, default to 1 page
+            logger.warning(f"Unexpected content type in calculate_required_pages: {type(content)}")
+            return 1
+            
+        required_pages = max(1, math.ceil(content_length / chars_per_page))
         return required_pages
     
     @staticmethod
