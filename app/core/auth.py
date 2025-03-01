@@ -12,8 +12,8 @@ import logging
 
 from app.core.config import settings
 
-# Configure logging
-logger = logging.getLogger("auth")
+# Configure logging - make sure to use the correct logger name
+logger = logging.getLogger("auth")  # This should be 'auth', not 'translation'
 
 # HTTP Bearer security scheme with auto_error=True to enforce authentication
 security = HTTPBearer(auto_error=True)

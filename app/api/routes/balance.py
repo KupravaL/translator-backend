@@ -38,6 +38,9 @@ async def get_balance(
                 detail="Authentication required"
             )
             
+        # Log the current user for debugging
+        logger.info(f"Getting balance for user: {current_user}")
+        
         # Get user balance
         balance = balance_service.get_user_balance(db, current_user)
         

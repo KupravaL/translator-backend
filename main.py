@@ -11,12 +11,12 @@ from app.core.config import settings
 from app.api.routes.google_auth import router as google_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 import asyncio
-from app.core.auth_middleware import AuthMiddleware  # Import our new middleware
+from app.core.auth_middleware import AuthMiddleware  # Import from the correct location
 
 # Configure logging with more detail
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',  # Include module name in logs
     datefmt='%Y-%m-%d %H:%M:%S',
     handlers=[
         logging.StreamHandler(),  # Log to console
@@ -24,12 +24,14 @@ logging.basicConfig(
     ]
 )
 
-# Set specific log levels for certain modules
+# Set specific log levels for different modules
 logging.getLogger("auth").setLevel(logging.DEBUG)
+logging.getLogger("auth_middleware").setLevel(logging.DEBUG)
 logging.getLogger("balance").setLevel(logging.INFO)
 logging.getLogger("translation").setLevel(logging.INFO)
 
 logger = logging.getLogger("api")
+logger.info("Application starting up...")
 
 class TimeoutMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -113,6 +115,7 @@ app = FastAPI(
 )
 
 # Add our auth middleware first (before the timeout middleware)
+logger.info("Adding AuthMiddleware to the application")
 app.add_middleware(AuthMiddleware)
 
 # Add the timeout middleware
@@ -156,6 +159,7 @@ async def add_security_headers(request: Request, call_next):
 # Exception handler for authentication errors
 @app.exception_handler(401)
 async def unauthorized_exception_handler(request: Request, exc):
+    logger.warning(f"401 error handler: {str(exc)}")
     return JSONResponse(
         status_code=401,
         content={"detail": str(exc)},

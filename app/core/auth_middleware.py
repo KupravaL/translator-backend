@@ -3,7 +3,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import JSONResponse
 import logging
 import re
+import json
 
+# Configure logger specifically for this module
 logger = logging.getLogger("auth_middleware")
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -29,6 +31,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             r"^/api/documents/status/.*$",
             r"^/api/documents/result/.*$",
         ]
+        
+        logger.info("AuthMiddleware initialized")
     
     async def dispatch(self, request: Request, call_next):
         """Process requests and handle authentication errors."""
@@ -44,6 +48,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         
         # If the response status code is 401 (Unauthorized)
         if response.status_code == 401:
+            logger.debug(f"Got 401 response for {path}, checking if token expired")
+            
             # Get the response body
             response_body = b""
             async for chunk in response.body_iterator:
@@ -51,8 +57,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             
             # Check if it's a token expiration
             try:
-                import json
-                error_detail = json.loads(response_body.decode("utf-8")).get("detail", "")
+                error_data = json.loads(response_body.decode("utf-8"))
+                error_detail = error_data.get("detail", "")
                 is_token_expired = "expired" in error_detail.lower()
                 
                 # Log the authorization failure
@@ -79,6 +85,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 
                 if needs_token_status and is_token_expired:
                     # For endpoints that need token status, return the error but add a special flag
+                    logger.info(f"Adding tokenExpired flag to response for {path}")
                     return JSONResponse(
                         status_code=401,
                         content={
