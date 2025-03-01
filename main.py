@@ -11,8 +11,9 @@ from app.core.config import settings
 from app.api.routes.google_auth import router as google_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 import asyncio
+from app.core.auth import AuthMiddleware  # Import our new middleware
 
-# Configure logging
+# Configure logging with more detail
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
@@ -22,6 +23,11 @@ logging.basicConfig(
         logging.FileHandler("api.log")  # Also log to file
     ]
 )
+
+# Set specific log levels for certain modules
+logging.getLogger("auth").setLevel(logging.DEBUG)
+logging.getLogger("balance").setLevel(logging.INFO)
+logging.getLogger("translation").setLevel(logging.INFO)
 
 logger = logging.getLogger("api")
 
@@ -106,6 +112,9 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Add our auth middleware first (before the timeout middleware)
+app.add_middleware(AuthMiddleware)
+
 # Add the timeout middleware
 app.add_middleware(TimeoutMiddleware)
 
@@ -150,6 +159,7 @@ async def unauthorized_exception_handler(request: Request, exc):
     return JSONResponse(
         status_code=401,
         content={"detail": str(exc)},
+        headers={"X-Token-Expired": "true"} if "expired" in str(exc).lower() else {}
     )
 
 @app.get("/")

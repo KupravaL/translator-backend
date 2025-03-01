@@ -7,12 +7,14 @@ import uuid
 import os
 from datetime import datetime
 import jwt
-
+import logging
 from app.core.database import get_db
 from app.core.auth import get_current_user, security, jwks_client
 from app.models.payment import Payment
 from app.services.balance import balance_service
 from app.services.email_service import email_service
+
+logger = logging.getLogger("api")
 
 router = APIRouter()
 
@@ -22,20 +24,42 @@ class BalanceResponse(BaseModel):
     pagesUsed: int
     lastUsed: Optional[str]  # ✅ Fix: Allow `None` if not set
 
-@router.get("/me/balance", response_model=BalanceResponse)  # ✅ Fixed route
+@router.get("/me/balance", response_model=BalanceResponse)
 async def get_balance(
+    response: Response,
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get user balance information."""
-    balance = balance_service.get_user_balance(db, current_user)
-    
-    return {
-        "userId": balance.user_id,
-        "pagesBalance": balance.pages_balance,
-        "pagesUsed": balance.pages_used,
-        "lastUsed": balance.last_used.isoformat() if balance.last_used else None  # ✅ Fix: Handle None case
-    }
+    try:
+        if not current_user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required"
+            )
+            
+        # Get user balance
+        balance = balance_service.get_user_balance(db, current_user)
+        
+        # Return balance information
+        return {
+            "userId": balance.user_id,
+            "pagesBalance": balance.pages_balance,
+            "pagesUsed": balance.pages_used,
+            "lastUsed": balance.last_used.isoformat() if balance.last_used else None
+        }
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        # Log the error
+        logger.error(f"Error getting balance: {str(e)}")
+        
+        # Return a proper error response
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve balance: {str(e)}"
+        )
 
 @router.get("/debug/balance")
 async def debug_balance(
