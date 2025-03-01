@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.api.routes.google_auth import router as google_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 import asyncio
-from app.core.auth import AuthMiddleware  # Import our new middleware
+from app.core.auth_middleware import AuthMiddleware  # Import our new middleware
 
 # Configure logging with more detail
 logging.basicConfig(
