@@ -7,11 +7,6 @@ import logging
 from app.core.config import settings
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] [Balance] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 logger = logging.getLogger("balance")
 
 class BalanceService:
@@ -119,12 +114,39 @@ class BalanceService:
     
     @staticmethod
     def deduct_pages_for_translation(db: Session, user_id: str, content: str) -> Dict[str, Any]:
-        """Deduct pages from user balance after translation."""
+        """
+        Deduct pages from user balance for translation.
+        
+        Args:
+            db: Database session
+            user_id: User ID
+            content: Content to calculate pages from
+            
+        Returns:
+            Dict with success status, deducted pages, and remaining balance
+        """
         try:
-            balance = BalanceService.get_user_balance(db, user_id)
+            # Get the user's balance record - for update to prevent race conditions
+            balance = db.query(UserBalance).filter(
+                UserBalance.user_id == user_id
+            ).with_for_update().first()
+            
+            if not balance:
+                logger.warning(f"User {user_id} has no balance record during deduction")
+                balance = UserBalance(
+                    user_id=user_id,
+                    pages_balance=settings.DEFAULT_BALANCE_PAGES,
+                    pages_used=0
+                )
+                db.add(balance)
+                db.flush()  # Make sure we have the record but don't commit yet
+            
+            # Calculate required pages based on content length
             deducted_pages = BalanceService.calculate_required_pages(content)
+            logger.info(f"Calculated {deducted_pages} pages for deduction (content length: {len(content) if isinstance(content, str) else 'N/A'})")
             
             if balance.pages_balance < deducted_pages:
+                logger.warning(f"Insufficient balance: User {user_id} has {balance.pages_balance} pages, needs {deducted_pages}")
                 return {
                     "success": False,
                     "error": f"Insufficient balance. Required: {deducted_pages} pages, Available: {balance.pages_balance} pages",
@@ -132,12 +154,14 @@ class BalanceService:
                 }
             
             # Update balance
+            original_balance = balance.pages_balance
             balance.pages_balance -= deducted_pages
             balance.pages_used += deducted_pages
-            db.commit()
-            db.refresh(balance)
             
-            logger.info(f"Deducted {deducted_pages} pages from user {user_id}, new balance: {balance.pages_balance}")
+            # Use flush instead of commit to allow this to be part of a larger transaction
+            db.flush()
+            
+            logger.info(f"Deducted {deducted_pages} pages from user {user_id}, balance: {original_balance} -> {balance.pages_balance}")
             
             return {
                 "success": True,
@@ -167,11 +191,12 @@ class BalanceService:
             balance = BalanceService.get_user_balance(db, user_id)
             
             # Update balance
+            original_balance = balance.pages_balance
             balance.pages_balance += pages
             db.commit()
             db.refresh(balance)
             
-            logger.info(f"Added {pages} pages to user {user_id}, new balance: {balance.pages_balance}")
+            logger.info(f"Added {pages} pages to user {user_id}, balance: {original_balance} -> {balance.pages_balance}")
             
             return {
                 "success": True,
@@ -204,12 +229,13 @@ class BalanceService:
             balance = BalanceService.get_user_balance(db, user_id)
             
             # Update balance - add back the pages and reduce the usage count
+            original_balance = balance.pages_balance
             balance.pages_balance += pages
             balance.pages_used = max(0, balance.pages_used - pages)  # Prevent negative usage
             db.commit()
             db.refresh(balance)
             
-            logger.info(f"Refunded {pages} pages to user {user_id}, new balance: {balance.pages_balance}")
+            logger.info(f"Refunded {pages} pages to user {user_id}, balance: {original_balance} -> {balance.pages_balance}")
             
             return {
                 "success": True,
@@ -231,5 +257,34 @@ class BalanceService:
                 "error": f"Failed to refund pages: {str(e)}",
                 "newBalance": 0
             }
+    
+    @staticmethod
+    def log_balance_audit(db: Session, user_id: str, action: str, pages: int, details: str = None) -> None:
+        """
+        Log balance changes for audit purposes.
+        This helps track and debug balance-related issues.
+        
+        Args:
+            db: Database session
+            user_id: User ID
+            action: Type of action (deduct, add, refund)
+            pages: Number of pages involved
+            details: Optional additional details
+        """
+        try:
+            # Get current balance for reference
+            balance = BalanceService.get_user_balance(db, user_id)
+            
+            # Log the audit entry
+            logger.info(f"BALANCE_AUDIT: {action.upper()} | User: {user_id} | Pages: {pages} | "
+                       f"Current Balance: {balance.pages_balance} | Current Used: {balance.pages_used} | "
+                       f"Details: {details or 'N/A'}")
+                       
+            # In a production system, you might want to store this in a database table
+            # for better tracking and analysis
+            
+        except Exception as e:
+            logger.error(f"Failed to log balance audit: {str(e)}")
+            # Don't raise the exception - this is just for logging
 
 balance_service = BalanceService()

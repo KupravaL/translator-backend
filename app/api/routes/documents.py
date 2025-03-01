@@ -119,12 +119,28 @@ async def translate_document(
             }
         
         # Calculate required pages based on file size
-        # For PDFs, estimate 1 page per 100KB
-        # For images, use a flat rate of 1 page
         required_pages = 1
         if 'pdf' in file_type:
-            kb_size = file_size / 1024
-            required_pages = max(1, math.ceil(kb_size / 100))
+            # More accurately estimate pages in PDFs
+            try:
+                # Try to get actual page count from the PDF if possible
+                buffer = io.BytesIO(file_content)
+                with fitz.open(stream=buffer, filetype="pdf") as doc:
+                    required_pages = len(doc)
+                logger.info(f"Determined PDF has {required_pages} pages from document metadata")
+            except Exception as e:
+                # Fall back to size-based estimation if PDF parsing fails
+                logger.warning(f"Could not determine PDF page count, using size estimate: {str(e)}")
+                kb_size = file_size / 1024
+                required_pages = max(1, math.ceil(kb_size / 100))  # 1 page per 100KB
+                logger.info(f"Estimated {required_pages} pages based on file size ({kb_size:.1f}KB)")
+        else:
+            # For images, use a flat rate but consider size for very large images
+            if file_size > 1024 * 1024:  # If over 1MB
+                required_pages = 2  # Charge 2 pages for large images
+            else:
+                required_pages = 1
+            logger.info(f"Using {required_pages} pages for image document")
         
         # Check if user has enough balance
         balance_check = balance_service.check_balance_for_pages(db, current_user, required_pages)
@@ -150,32 +166,41 @@ async def translate_document(
             fromLang=from_lang,
             toLang=to_lang,
             fileType=file_type,
-            totalPages=0,
+            totalPages=required_pages,  # Set the total pages right away
             currentPage=0,
             progress=0
         )
-        db.add(translation_progress)
-        db.commit()
-        logger.info(f"Created translation record: {process_id}")
         
-        # Create dummy content string for deduction calculation
-        # We're not using the actual content length since we don't know it yet
-        # Instead, we're using the calculated required_pages directly
-        dummy_content = "X" * (required_pages * 3000)
-        
-        # Deduct pages from user balance immediately to prevent over-usage
-        deduction_result = balance_service.deduct_pages_for_translation(db, current_user, dummy_content)
-        if not deduction_result["success"]:
-            logger.error(f"Failed to deduct pages: {deduction_result['error']}")
-            # Rollback the translation record if balance deduction fails
-            db.query(TranslationProgress).filter(TranslationProgress.processId == process_id).delete()
+        # Start a database transaction for atomicity
+        try:
+            # Add the translation record
+            db.add(translation_progress)
+            
+            # Deduct pages from user balance - with consistent page count
+            # Create a fixed-length string based on the required pages
+            content_for_deduction = ' ' * (required_pages * 3000)
+            deduction_result = balance_service.deduct_pages_for_translation(db, current_user, content_for_deduction)
+            
+            if not deduction_result["success"]:
+                logger.error(f"Failed to deduct pages: {deduction_result['error']}")
+                # Don't need to explicitly rollback as we'll raise an exception
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=deduction_result["error"]
+                )
+            
+            # If we get here, both operations succeeded, commit the transaction
             db.commit()
+            logger.info(f"Created translation record: {process_id} and deducted {required_pages} pages")
+            
+        except Exception as tx_error:
+            # Roll back the transaction if any error occurred
+            db.rollback()
+            logger.error(f"Transaction failed, rolling back: {str(tx_error)}")
             return {
-                "error": deduction_result["error"],
-                "type": "BALANCE_ERROR"
+                "error": f"Failed to process request: {str(tx_error)}",
+                "type": "TRANSACTION_ERROR"
             }
-        
-        logger.info(f"Deducted {required_pages} pages from user balance")
         
         # Submit translation task to the dedicated worker pool
         worker.submit_task(
@@ -270,20 +295,73 @@ def handle_translation(
                 progress.progress = 100
                 progress.currentPage = progress.totalPages
                 db.commit()
+                
+                # Log balance audit for successful translation
+                # This doesn't change the balance but helps track successful completions
+                balance_service.log_balance_audit(
+                    db, 
+                    user_id, 
+                    "completed", 
+                    progress.totalPages, 
+                    f"Translation completed: {process_id}, {file_name}"
+                )
             else:
-                # Translation failed
+                # Translation failed - refund pages
                 logger.error(f"[BG TASK] Translation failed for {process_id}: {translation_result.get('error', 'Unknown error')}")
                 update_translation_status(db, process_id, "failed")
+                
+                # Attempt to refund the pages that were deducted
+                try:
+                    if progress.totalPages > 0:
+                        refund_result = balance_service.refund_pages_for_failed_translation(
+                            db, user_id, progress.totalPages
+                        )
+                        if refund_result["success"]:
+                            logger.info(f"[BG TASK] Refunded {progress.totalPages} pages to user {user_id} for failed translation")
+                        else:
+                            logger.error(f"[BG TASK] Failed to refund pages: {refund_result.get('error')}")
+                except Exception as refund_error:
+                    logger.exception(f"[BG TASK] Error refunding pages: {str(refund_error)}")
             
         except Exception as processing_error:
             logger.exception(f"[BG TASK] Translation processing error: {str(processing_error)}")
             update_translation_status(db, process_id, "failed")
+            
+            # Attempt to refund the pages that were deducted
+            try:
+                if progress and progress.totalPages > 0:
+                    refund_result = balance_service.refund_pages_for_failed_translation(
+                        db, user_id, progress.totalPages
+                    )
+                    if refund_result["success"]:
+                        logger.info(f"[BG TASK] Refunded {progress.totalPages} pages to user {user_id} for failed translation")
+                    else:
+                        logger.error(f"[BG TASK] Failed to refund pages: {refund_result.get('error')}")
+            except Exception as refund_error:
+                logger.exception(f"[BG TASK] Error refunding pages: {str(refund_error)}")
             
     except Exception as e:
         logger.exception(f"[BG TASK] Background task error: {str(e)}")
         try:
             if db:
                 update_translation_status(db, process_id, "failed")
+                
+                # Attempt to refund pages if the transaction failed
+                try:
+                    progress = db.query(TranslationProgress).filter(
+                        TranslationProgress.processId == process_id
+                    ).first()
+                    
+                    if progress and progress.totalPages > 0:
+                        refund_result = balance_service.refund_pages_for_failed_translation(
+                            db, user_id, progress.totalPages
+                        )
+                        if refund_result["success"]:
+                            logger.info(f"[BG TASK] Refunded {progress.totalPages} pages to user {user_id} for failed translation")
+                        else:
+                            logger.error(f"[BG TASK] Failed to refund pages: {refund_result.get('error')}")
+                except Exception as refund_error:
+                    logger.exception(f"[BG TASK] Error refunding pages: {str(refund_error)}")
         except Exception as inner_e:
             logger.exception(f"Failed to update status to failed: {str(inner_e)}")
             
@@ -301,7 +379,7 @@ def handle_translation(
             "status": "completed",
             "duration": duration
         }
-
+    
 async def translate_document_content(
     process_id: str,
     file_content: bytes,
