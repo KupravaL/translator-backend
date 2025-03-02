@@ -18,8 +18,12 @@ logger = logging.getLogger("auth")  # This should be 'auth', not 'translation'
 # HTTP Bearer security scheme with auto_error=True to enforce authentication
 security = HTTPBearer(auto_error=True)
 
-# Clerk's JWKS URL to fetch the public keys
-jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
+# Check if the issuer URL already has https:// 
+if settings.CLERK_ISSUER_URL.startswith("https://"):
+    jwks_url = f"{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
+else:
+    jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
+    
 jwks_client = PyJWKClient(jwks_url)
 
 logger.info(jwks_client.fetch_data)
@@ -42,7 +46,13 @@ def get_jwks():
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            clerk_jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
+            if settings.CLERK_ISSUER_URL.startswith("https://"):
+                clerk_jwks_url = f"{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
+            else:
+                clerk_jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
+                
+            # Inside get_jwks function, after determining the URL
+            logger.debug(f"JWKS URL (parsed): {clerk_jwks_url}")    
             logger.info(f"Fetching JWKS from: {clerk_jwks_url}")
             response = requests.get(clerk_jwks_url, timeout=5)  # Add timeout
             response.raise_for_status()
