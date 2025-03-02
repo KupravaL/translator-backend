@@ -22,7 +22,7 @@ security = HTTPBearer(auto_error=True)
 jwks_url = f"https://{settings.CLERK_ISSUER_URL}/.well-known/jwks.json"
 jwks_client = PyJWKClient(jwks_url)
 
-logger.info("This is what I need"+jwks_client.fetch_data)
+logger.info(jwks_client.fetch_data)
 
 # Cache for Clerk's JWKS (JSON Web Key Set)
 jwks_cache = {
