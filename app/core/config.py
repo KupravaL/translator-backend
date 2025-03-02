@@ -22,7 +22,7 @@ class Settings(BaseModel):
     # Authentication - Clerk
     CLERK_SECRET_KEY: str = os.getenv("CLERK_SECRET_KEY", "")
     CLERK_PUBLISHABLE_KEY: str = os.getenv("CLERK_PUBLISHABLE_KEY", "")
-    CLERK_ISSUER_URL: str = os.getenv("CLERK_ISSUER_URL", "https://api.clerk.dev")
+    CLERK_ISSUER_URL: str = os.getenv("CLERK_ISSUER_URL", "")
     CLERK_AUDIENCE: str = os.getenv("CLERK_AUDIENCE", "")
     CLERK_WEBHOOK_SECRET: str = os.getenv("CLERK_WEBHOOK_SECRET", "")
     
