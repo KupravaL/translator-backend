@@ -143,7 +143,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
 app.include_router(export.router, prefix="/api/export", tags=["Export"])
 app.include_router(google_auth_router)
-app.include_router(translation_history.router, prefix="/history", tags=["history"])
+app.include_router(translation_history.router, prefix="/api/history", tags=["history"])
 
 # Add middleware to set security headers
 @app.middleware("http")
