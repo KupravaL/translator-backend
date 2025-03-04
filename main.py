@@ -12,6 +12,7 @@ from app.api.routes.google_auth import router as google_auth_router
 from starlette.middleware.sessions import SessionMiddleware
 import asyncio
 from app.core.auth_middleware import AuthMiddleware  # Import from the correct location
+from app.api.routes import translation_history
 
 # Configure logging with more detail
 logging.basicConfig(
@@ -142,6 +143,7 @@ app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(documents.router, prefix="/api/documents", tags=["Documents"])
 app.include_router(export.router, prefix="/api/export", tags=["Export"])
 app.include_router(google_auth_router)
+app.include_router(translation_history.router, prefix="/history", tags=["history"])
 
 # Add middleware to set security headers
 @app.middleware("http")
