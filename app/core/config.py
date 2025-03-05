@@ -39,7 +39,7 @@ class Settings(BaseModel):
     MAX_FILE_SIZE: int = 20 * 1024 * 1024  # 20MB
     MAX_CHUNK_SIZE: int = 2500  # Maximum characters per chunk
     SUPPORTED_IMAGE_TYPES: List[str] = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]
-    SUPPORTED_DOC_TYPES: List[str] = ["application/pdf"]
+    SUPPORTED_DOC_TYPES: List[str] = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]
     
     # Default user settings
     DEFAULT_BALANCE_PAGES: int = 10
