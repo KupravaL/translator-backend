@@ -37,6 +37,9 @@ class DocxGeneratorService:
             html_content = re.sub(r'<\?xml[^>]*\?>', '', html_content)
             html_content = html_content.replace('&nbsp;', ' ')
             
+            # NEW: Fix \n characters in the HTML content
+            html_content = html_content.replace('\\n', ' ')
+            
             # Parse the HTML content
             soup = BeautifulSoup(html_content, 'html.parser')
             
@@ -114,6 +117,16 @@ class DocxGeneratorService:
         for element in top_elements:
             self._process_element(doc, element)
 
+    def _clean_text(self, text):
+        """Clean text by removing \n characters and extra whitespace."""
+        if text is None:
+            return ""
+        # Replace literal \n with space
+        text = text.replace('\\n', ' ')
+        # Replace multiple spaces with single space
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+
     def _process_element(self, doc, element):
         """Process an HTML element based on its type."""
         # Skip empty or None elements
@@ -122,7 +135,8 @@ class DocxGeneratorService:
             
         if isinstance(element, NavigableString):
             if element.strip():
-                doc.add_paragraph(element.strip())
+                # NEW: Clean the text before adding
+                doc.add_paragraph(self._clean_text(element))
             return
             
         # Skip processing certain elements
@@ -142,7 +156,8 @@ class DocxGeneratorService:
                 for child in element.children:
                     if isinstance(child, NavigableString):
                         if child.strip():
-                            doc.add_paragraph(child.strip())
+                            # NEW: Clean the text before adding
+                            doc.add_paragraph(self._clean_text(child))
                     elif child.name:
                         self._process_element(doc, child)
                     
@@ -170,7 +185,8 @@ class DocxGeneratorService:
             for child in element.children:
                 if isinstance(child, NavigableString):
                     if child.strip():
-                        para = doc.add_paragraph(child.strip())
+                        # NEW: Clean the text before adding
+                        para = doc.add_paragraph(self._clean_text(child))
                         para.style = 'Normal'
                 elif child.name:
                     if child.name == 'p':
@@ -182,7 +198,8 @@ class DocxGeneratorService:
             for child in element.children:
                 if isinstance(child, NavigableString):
                     if child.strip():
-                        para = doc.add_paragraph(child.strip())
+                        # NEW: Clean the text before adding
+                        para = doc.add_paragraph(self._clean_text(child))
                         para.style = 'Header'
                 elif child.name:
                     if child.name == 'p':
@@ -209,40 +226,47 @@ class DocxGeneratorService:
             return
             
         if isinstance(element, NavigableString):
-            text = element.strip()
+            # NEW: Clean the text before adding
+            text = self._clean_text(element)
             if text:
                 paragraph.add_run(text)
             return
         
         # Check if the element has a text node directly
         if element.string and element.string.strip():
-            run = paragraph.add_run(element.string.strip())
+            # NEW: Clean the text before adding
+            run = paragraph.add_run(self._clean_text(element.string))
             self._apply_text_formatting(run, element)
             return
             
         # Process children
         for child in element.children:
             if isinstance(child, NavigableString):
-                text = child.strip()
+                # NEW: Clean the text before adding
+                text = self._clean_text(child)
                 if text:
                     run = paragraph.add_run(text)
                     self._apply_text_formatting(run, element)
             elif child.name == 'br':
                 paragraph.add_run().add_break()
             elif child.name in ['strong', 'b']:
-                run = paragraph.add_run(child.get_text().strip())
+                # NEW: Clean the text before adding
+                run = paragraph.add_run(self._clean_text(child.get_text()))
                 run.bold = True
                 self._apply_text_formatting(run, child)
             elif child.name in ['em', 'i']:
-                run = paragraph.add_run(child.get_text().strip())
+                # NEW: Clean the text before adding
+                run = paragraph.add_run(self._clean_text(child.get_text()))
                 run.italic = True
                 self._apply_text_formatting(run, child)
             elif child.name == 'u':
-                run = paragraph.add_run(child.get_text().strip())
+                # NEW: Clean the text before adding
+                run = paragraph.add_run(self._clean_text(child.get_text()))
                 run.underline = True
                 self._apply_text_formatting(run, child)
             elif child.name == 'a':
-                text = child.get_text().strip()
+                # NEW: Clean the text before adding
+                text = self._clean_text(child.get_text())
                 if text:
                     run = paragraph.add_run(text)
                     run.underline = True
@@ -254,7 +278,8 @@ class DocxGeneratorService:
                         run.add_comment(f"Link: {href}")
             elif child.name == 'span':
                 # Process span with potential inline styles
-                run = paragraph.add_run(child.get_text().strip())
+                # NEW: Clean the text before adding
+                run = paragraph.add_run(self._clean_text(child.get_text()))
                 self._apply_text_formatting(run, child)
             else:
                 # Recursively process other elements
