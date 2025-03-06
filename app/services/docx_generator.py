@@ -37,7 +37,7 @@ class DocxGeneratorService:
             html_content = re.sub(r'<\?xml[^>]*\?>', '', html_content)
             html_content = html_content.replace('&nbsp;', ' ')
             
-            # NEW: Fix \n characters in the HTML content
+            # Fix \n characters in the HTML content
             html_content = html_content.replace('\\n', ' ')
             
             # Parse the HTML content
@@ -74,6 +74,9 @@ class DocxGeneratorService:
                 
                 self._process_content(doc, soup)
             
+            # Format document structure for improved appearance
+            self._format_document_structure(doc)
+            
             # Save document to bytes
             docx_stream = io.BytesIO()
             doc.save(docx_stream)
@@ -93,6 +96,52 @@ class DocxGeneratorService:
             error_stream.seek(0)
             return error_stream.getvalue()
 
+    def _format_document_structure(self, doc):
+        """
+        Post-process the document to ensure consistent formatting.
+        This fixes article headings and other structural elements.
+        """
+        # Track paragraphs to modify or delete
+        paragraphs_to_delete = []
+        article_pattern = re.compile(r'^Article\s+(\d+)(.*)$')
+        
+        # First pass: identify articles and structure issues
+        for i, para in enumerate(doc.paragraphs):
+            text = para.text.strip()
+            
+            # Skip empty paragraphs
+            if not text:
+                continue
+            
+            # Fix Article headings
+            article_match = article_pattern.match(text)
+            if article_match and not text.startswith('##'):
+                article_num = article_match.group(1)
+                article_content = article_match.group(2).strip()
+                
+                # Create the heading with proper formatting
+                heading_text = f"## Article {article_num}"
+                new_heading = doc.add_paragraph(heading_text)
+                new_heading.style = 'Heading 2'
+                
+                # If there's content after the article number, add as a new paragraph
+                if article_content:
+                    content_para = doc.add_paragraph(article_content)
+                
+                # Mark the original for deletion
+                paragraphs_to_delete.append(para)
+        
+        # Second pass: center main headings
+        for para in doc.paragraphs:
+            if para.style.name == 'Heading 1' or para.style.name == 'Title':
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Apply deletions (from end to beginning to preserve indices)
+        for para in reversed(paragraphs_to_delete):
+            p_element = para._element
+            if p_element.getparent() is not None:
+                p_element.getparent().remove(p_element)
+    
     def _process_content(self, doc, parent_element):
         """Process all relevant content within an element."""
         # First pass: find all top-level elements that should be processed
@@ -135,7 +184,7 @@ class DocxGeneratorService:
             
         if isinstance(element, NavigableString):
             if element.strip():
-                # NEW: Clean the text before adding
+                # Clean the text before adding
                 doc.add_paragraph(self._clean_text(element))
             return
             
@@ -156,7 +205,7 @@ class DocxGeneratorService:
                 for child in element.children:
                     if isinstance(child, NavigableString):
                         if child.strip():
-                            # NEW: Clean the text before adding
+                            # Clean the text before adding
                             doc.add_paragraph(self._clean_text(child))
                     elif child.name:
                         self._process_element(doc, child)
@@ -185,7 +234,7 @@ class DocxGeneratorService:
             for child in element.children:
                 if isinstance(child, NavigableString):
                     if child.strip():
-                        # NEW: Clean the text before adding
+                        # Clean the text before adding
                         para = doc.add_paragraph(self._clean_text(child))
                         para.style = 'Normal'
                 elif child.name:
@@ -198,7 +247,7 @@ class DocxGeneratorService:
             for child in element.children:
                 if isinstance(child, NavigableString):
                     if child.strip():
-                        # NEW: Clean the text before adding
+                        # Clean the text before adding
                         para = doc.add_paragraph(self._clean_text(child))
                         para.style = 'Header'
                 elif child.name:
@@ -226,7 +275,7 @@ class DocxGeneratorService:
             return
             
         if isinstance(element, NavigableString):
-            # NEW: Clean the text before adding
+            # Clean the text before adding
             text = self._clean_text(element)
             if text:
                 paragraph.add_run(text)
@@ -234,7 +283,7 @@ class DocxGeneratorService:
         
         # Check if the element has a text node directly
         if element.string and element.string.strip():
-            # NEW: Clean the text before adding
+            # Clean the text before adding
             run = paragraph.add_run(self._clean_text(element.string))
             self._apply_text_formatting(run, element)
             return
@@ -242,7 +291,7 @@ class DocxGeneratorService:
         # Process children
         for child in element.children:
             if isinstance(child, NavigableString):
-                # NEW: Clean the text before adding
+                # Clean the text before adding
                 text = self._clean_text(child)
                 if text:
                     run = paragraph.add_run(text)
@@ -250,22 +299,22 @@ class DocxGeneratorService:
             elif child.name == 'br':
                 paragraph.add_run().add_break()
             elif child.name in ['strong', 'b']:
-                # NEW: Clean the text before adding
+                # Clean the text before adding
                 run = paragraph.add_run(self._clean_text(child.get_text()))
                 run.bold = True
                 self._apply_text_formatting(run, child)
             elif child.name in ['em', 'i']:
-                # NEW: Clean the text before adding
+                # Clean the text before adding
                 run = paragraph.add_run(self._clean_text(child.get_text()))
                 run.italic = True
                 self._apply_text_formatting(run, child)
             elif child.name == 'u':
-                # NEW: Clean the text before adding
+                # Clean the text before adding
                 run = paragraph.add_run(self._clean_text(child.get_text()))
                 run.underline = True
                 self._apply_text_formatting(run, child)
             elif child.name == 'a':
-                # NEW: Clean the text before adding
+                # Clean the text before adding
                 text = self._clean_text(child.get_text())
                 if text:
                     run = paragraph.add_run(text)
@@ -278,7 +327,7 @@ class DocxGeneratorService:
                         run.add_comment(f"Link: {href}")
             elif child.name == 'span':
                 # Process span with potential inline styles
-                # NEW: Clean the text before adding
+                # Clean the text before adding
                 run = paragraph.add_run(self._clean_text(child.get_text()))
                 self._apply_text_formatting(run, child)
             else:
@@ -376,8 +425,8 @@ class DocxGeneratorService:
                         else:
                             p = table_cell.add_paragraph()
                         
-                        # Process text content
-                        self._process_text_content(p, cell)
+                        # Process cell text with special handling for our patterns
+                        self._process_table_cell_content(p, cell, j)
                         
                         # Check for colspan
                         colspan = int(cell.get('colspan', 1))
@@ -413,6 +462,60 @@ class DocxGeneratorService:
                         logger.warning(f"Error processing table cell: {str(e)}")
         
         return table
+
+    def _process_table_cell_content(self, paragraph, cell, column_index):
+        """
+        Process a table cell with special handling for service tariff tables.
+        
+        Args:
+            paragraph: The paragraph to add content to
+            cell: The HTML cell element
+            column_index: The column index (0-based) to help identify special columns
+        """
+        # Get the cell text
+        cell_text = self._clean_text(cell.get_text())
+        
+        # Skip empty cells
+        if not cell_text:
+            return
+        
+        # Check if this is a special column that might need line break handling
+        if column_index == 2:  # "Number of Objects" column (0-based index)
+            # Apply special formatting for "minutes" patterns
+            if 'minutes' in cell_text and 'Every additional' in cell_text:
+                parts = re.split(r'(Every additional)', cell_text, 1)
+                if len(parts) == 3:
+                    # Add first part
+                    paragraph.add_run(parts[0].strip())
+                    # Add line break
+                    paragraph.add_run().add_break()
+                    # Add second part with "Every additional"
+                    paragraph.add_run(parts[1] + ' ' + parts[2].strip())
+                    return
+        
+        elif column_index == 3:  # "Service Tariff" column (0-based index)
+            # Check for special number patterns like "5010" that should be "50\n10"
+            if re.match(r'^\d+$', cell_text) and len(cell_text) >= 3:
+                # Pattern 1: Values ending with "10" or "20" (e.g., 5010 → 50\n10)
+                if len(cell_text) >= 4 and (cell_text.endswith('10') or cell_text.endswith('20')):
+                    first_part = cell_text[:-2]
+                    second_part = cell_text[-2:]
+                    paragraph.add_run(first_part)
+                    paragraph.add_run().add_break()
+                    paragraph.add_run(second_part)
+                    return
+                
+                # Pattern 2: Values ending with "5" (e.g., 505 → 50\n5)
+                elif len(cell_text) >= 3 and cell_text.endswith('5'):
+                    first_part = cell_text[:-1]
+                    second_part = cell_text[-1:]
+                    paragraph.add_run(first_part)
+                    paragraph.add_run().add_break()
+                    paragraph.add_run(second_part)
+                    return
+        
+        # Default handling for all other cells or if no special pattern matched
+        self._process_text_content(paragraph, cell)
 
     def _set_cell_shading(self, cell, color_hex):
         """Set the background shading of a table cell."""
