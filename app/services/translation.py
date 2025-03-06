@@ -763,7 +763,6 @@ Your entire response must be valid HTML that could be directly used in a webpage
                     
                     # Extract content using document processing service
                     try:
-                        from app.services.document_processing import document_processing_service
                         
                         # Process the document
                         html_content = await document_processing_service.process_text_document(file_content, file_type)
