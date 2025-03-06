@@ -9,12 +9,18 @@ import logging
 import traceback
 from fastapi import UploadFile
 from sqlalchemy.orm import Session
-from app.services.translation import TranslationError  # Import only the error class, not the service
 from app.core.config import settings
 from app.models.translation import TranslationProgress, TranslationChunk
 from typing import Tuple, List, Dict, Any, Optional
 import fitz  # PyMuPDF
 from bs4 import BeautifulSoup
+
+# Define our own TranslationError class to avoid circular imports
+class TranslationError(Exception):
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+        self.name = 'TranslationError'
 
 # Configure logger
 logger = logging.getLogger("documents")
@@ -195,7 +201,7 @@ class DocumentProcessingService:
                              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                              "application/vnd.oasis.opendocument.text"]:
                 # Use the same approach as PDF - send to Gemini for processing
-                # For simplified implementation, import translation_service locally
+                # For simplified implementation, import translation_service locally to avoid circular imports
                 from app.services.translation import translation_service
                 
                 # Create a temporary file
@@ -226,7 +232,7 @@ class DocumentProcessingService:
                     Analyze the content carefully and use the most appropriate structure for each section. Return only valid HTML."""
                     
                     # Use Gemini through translation_service
-                    response = translation_service.gemini_model.generate_content(
+                    response = translation_service.extraction_model.generate_content(
                         contents=[prompt, {"mime_type": file_type, "data": doc_data}],
                         generation_config={"temperature": 0.1}
                     )
@@ -289,7 +295,8 @@ class DocumentProcessingService:
                     soup = BeautifulSoup(html_content, 'html.parser')
                     for index_div in soup.find_all(class_='index'):
                         index_text = index_div.get_text().strip()
-                        corrected_index = normalize_index(index_text) if hasattr(self, 'normalize_index') else index_text
+                        # Use the local normalize_index method
+                        corrected_index = self.normalize_index(index_text) if hasattr(self, 'normalize_index') else index_text
                         if corrected_index != index_text:
                             index_div.string = corrected_index
                             
@@ -349,9 +356,7 @@ class DocumentProcessingService:
         # Fix incorrect indices
         index_text = re.sub(r'1\.1\.141', '1.1.1.4.1', index_text)
         index_text = re.sub(r'1\.1\.1\.42', '1.1.1.4.2', index_text)
-        
+
         return index_text
-
-
-# Create an instance of DocumentProcessingService
+    
 document_processing_service = DocumentProcessingService()

@@ -14,7 +14,6 @@ from bs4 import BeautifulSoup, NavigableString
 import io
 import asyncio
 import nest_asyncio
-from app.services.document_processing import document_processing_service
 
 # Configure logging
 logging.basicConfig(
@@ -35,9 +34,8 @@ class TranslationService:
         # Initialize Google Gemini
         if settings.GOOGLE_API_KEY:
             genai.configure(api_key=settings.GOOGLE_API_KEY)
-            # Use Gemini-2.0-flash for content extraction (better for vision tasks)
+            # Use Gemini-2.0-flash for content extraction and translation
             self.extraction_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
-            # Use Gemini-2.0-flash for translation as well
             self.translation_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
             logger.info("Initialized Google Gemini models for extraction and translation")
         else:
@@ -628,308 +626,310 @@ Here is the HTML to translate:
             loop.close()
 
     async def _translate_document_content_sync_wrapper(self, process_id, file_content, from_lang, to_lang, file_type, db):
-            """Async wrapper implementation that calls the existing async methods."""
-            total_pages = 0
-            translated_pages = []
-            start_time = time.time()
+        """Async wrapper implementation that calls the existing async methods."""
+        total_pages = 0
+        translated_pages = []
+        start_time = time.time()
+        
+        # Find translation progress record to check userId for potential refunds
+        try:
+            progress = db.query(TranslationProgress).filter(
+                TranslationProgress.processId == process_id
+            ).first()
             
-            # Find translation progress record to check userId for potential refunds
-            try:
-                progress = db.query(TranslationProgress).filter(
-                    TranslationProgress.processId == process_id
-                ).first()
+            if not progress:
+                logger.error(f"[TRANSLATE] Translation record not found for {process_id}")
+                return {
+                    "success": False,
+                    "error": "Translation record not found"
+                }
                 
-                if not progress:
-                    logger.error(f"[TRANSLATE] Translation record not found for {process_id}")
-                    return {
-                        "success": False,
-                        "error": "Translation record not found"
-                    }
+            user_id = progress.userId
+        except Exception as e:
+            logger.error(f"[TRANSLATE] Failed to get translation record: {str(e)}")
+            user_id = None
+        try:
+            # Handle PDFs
+            if file_type in settings.SUPPORTED_DOC_TYPES and 'pdf' in file_type:
+                # Get PDF page count
+                buffer = io.BytesIO(file_content)
+                with fitz.open(stream=buffer, filetype="pdf") as doc:
+                    total_pages = len(doc)
+                
+                logger.info(f"[TRANSLATE] PDF has {total_pages} pages for {process_id}")
+                
+                # Update total pages
+                if progress:
+                    progress.totalPages = total_pages
+                    db.commit()
+                
+                # Process each page
+                for page_index in range(total_pages):
+                    current_page = page_index + 1
                     
-                user_id = progress.userId
-            except Exception as e:
-                logger.error(f"[TRANSLATE] Failed to get translation record: {str(e)}")
-                user_id = None
-            
-            try:
-                # Handle PDFs
-                if file_type in settings.SUPPORTED_DOC_TYPES and 'pdf' in file_type:
-                    # Get PDF page count
-                    buffer = io.BytesIO(file_content)
-                    with fitz.open(stream=buffer, filetype="pdf") as doc:
-                        total_pages = len(doc)
-                    
-                    logger.info(f"[TRANSLATE] PDF has {total_pages} pages for {process_id}")
-                    
-                    # Update total pages
-                    if progress:
-                        progress.totalPages = total_pages
-                        db.commit()
-                    
-                    # Process each page
-                    for page_index in range(total_pages):
-                        current_page = page_index + 1
-                        
-                        # Update progress
-                        progress = db.query(TranslationProgress).filter(
-                            TranslationProgress.processId == process_id
-                        ).first()
-                        
-                        if not progress or progress.status == "failed":
-                            logger.warning(f"[TRANSLATE] Process was canceled or failed: {process_id}")
-                            return
-                            
-                        progress.currentPage = current_page
-                        progress.progress = int((current_page / total_pages) * 100)
-                        db.commit()
-                        
-                        logger.info(f"[TRANSLATE] Processing page {current_page}/{total_pages} for {process_id}")
-                        
-                        # Extract content
-                        html_content = await self.extract_page_content(file_content, page_index)
-                        
-                        if html_content and len(html_content.strip()) > 0:
-                            logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from page {current_page}")
-                            
-                            # Translate content
-                            translated_content = None
-                            
-                            # Split content if needed
-                            if len(html_content) > 12000:
-                                chunks = self.split_content_into_chunks(html_content, 10000)
-                                logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks")
-                                
-                                translated_chunks = []
-                                for i, chunk in enumerate(chunks):
-                                    chunk_id = f"{process_id}-p{current_page}-c{i+1}"
-                                    logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
-                                    try:
-                                        chunk_result = await self.translate_chunk(
-                                            chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                        )
-                                        translated_chunks.append(chunk_result)
-                                    except Exception as chunk_error:
-                                        logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(chunk_error)}")
-                                        # Continue with other chunks but mark this one as failed
-                                        translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
-                                    
-                                translated_content = self.combine_html_content(translated_chunks)
-                            else:
-                                chunk_id = f"{process_id}-p{current_page}"
-                                try:
-                                    translated_content = await self.translate_chunk(
-                                        html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                    )
-                                except Exception as chunk_error:
-                                    logger.error(f"[TRANSLATE] Error translating page {current_page}: {str(chunk_error)}")
-                                    # Create an error message instead
-                                    translated_content = f"<div class='error'>Translation error on page {current_page}: {str(chunk_error)}</div>"
-                            
-                            # Save translation
-                            translation_chunk = TranslationChunk(
-                                processId=process_id,
-                                pageNumber=page_index,
-                                content=translated_content
-                            )
-                            db.add(translation_chunk)
-                            db.commit()
-                            
-                            translated_pages.append(page_index)
-                        else:
-                            logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
-
-                elif file_type in settings.SUPPORTED_DOC_TYPES:
-                    # Handle non-PDF document types
-                    
-                    # Set total pages - simple estimate for now
-                    total_pages = 1
-                    if progress:
-                        progress.totalPages = total_pages
-                        progress.currentPage = 1
-                        db.commit()
-                    
-                    logger.info(f"[TRANSLATE] Processing document with type {file_type} for {process_id}")
-                    
-                    # Extract content using document processing service
-                    try:
-                        # Access the document processing service through the module
-                        html_content = await document_processing_service.process_text_document(
-                            file_content, 
-                            file_type
-                        )
-                        
-                        if html_content and len(html_content.strip()) > 0:
-                            logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from document")
-                            
-                            # Translate content
-                            translated_content = None
-                            
-                            # Split content if needed
-                            if len(html_content) > 12000:
-                                chunks = self.split_content_into_chunks(html_content, 10000)
-                                logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks")
-                                
-                                translated_chunks = []
-                                for i, chunk in enumerate(chunks):
-                                    chunk_id = f"{process_id}-doc-c{i+1}"
-                                    logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
-                                    try:
-                                        chunk_result = await self.translate_chunk(
-                                            chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                        )
-                                        translated_chunks.append(chunk_result)
-                                    except Exception as chunk_error:
-                                        logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(chunk_error)}")
-                                        # Continue with other chunks but mark this one as failed
-                                        translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
-                                    
-                                translated_content = self.combine_html_content(translated_chunks)
-                            else:
-                                chunk_id = f"{process_id}-doc"
-                                try:
-                                    translated_content = await self.translate_chunk(
-                                        html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                    )
-                                except Exception as chunk_error:
-                                    logger.error(f"[TRANSLATE] Error translating document: {str(chunk_error)}")
-                                    # Create an error message instead
-                                    translated_content = f"<div class='error'>Translation error: {str(chunk_error)}</div>"
-                            
-                            # Save translation
-                            translation_chunk = TranslationChunk(
-                                processId=process_id,
-                                pageNumber=0,
-                                content=translated_content
-                            )
-                            db.add(translation_chunk)
-                            db.commit()
-                            
-                            translated_pages.append(0)
-                            logger.info(f"[TRANSLATE] Completed document translation")
-                        else:
-                            logger.error(f"[TRANSLATE] No content extracted from document with type {file_type}")
-                            self._update_translation_status_sync(db, process_id, "failed")
-                            return {
-                                "success": False,
-                                "error": f"No content extracted from document with type {file_type}"
-                            }
-                    except Exception as doc_error:
-                        logger.exception(f"[TRANSLATE] Document processing error: {str(doc_error)}")
-                        self._update_translation_status_sync(db, process_id, "failed")
-                        return {
-                            "success": False,
-                            "error": f"Document processing error: {str(doc_error)}"
-                        }    
-                # Handle images
-                elif file_type in settings.SUPPORTED_IMAGE_TYPES:
-                    # Set total pages = 1 for images
-                    total_pages = 1
-                    if progress:
-                        progress.totalPages = total_pages
-                        progress.currentPage = 1
-                        db.commit()
-                    
-                    # Extract content
-                    try:
-                        html_content = await self.extract_from_image(file_content)
-                        
-                        if html_content and len(html_content.strip()) > 0:
-                            # Translate content
-                            translated_content = None
-                            
-                            # Split content if needed
-                            if len(html_content) > 12000:
-                                chunks = self.split_content_into_chunks(html_content, 10000)
-                                translated_chunks = []
-                                for i, chunk in enumerate(chunks):
-                                    chunk_id = f"{process_id}-img-c{i+1}"
-                                    try:
-                                        chunk_result = await self.translate_chunk(
-                                            chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                        )
-                                        translated_chunks.append(chunk_result)
-                                    except Exception as chunk_error:
-                                        logger.error(f"[TRANSLATE] Error translating image chunk {i+1}: {str(chunk_error)}")
-                                        translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
-                                    
-                                translated_content = self.combine_html_content(translated_chunks)
-                            else:
-                                chunk_id = f"{process_id}-img"
-                                try:
-                                    translated_content = await self.translate_chunk(
-                                        html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                    )
-                                except Exception as e:
-                                    logger.error(f"[TRANSLATE] Error translating image: {str(e)}")
-                                    translated_content = f"<div class='error'>Translation error: {str(e)}</div>"
-                            
-                            # Save translation
-                            translation_chunk = TranslationChunk(
-                                processId=process_id,
-                                pageNumber=0,
-                                content=translated_content
-                            )
-                            db.add(translation_chunk)
-                            db.commit()
-                            
-                            translated_pages.append(0)
-                        else:
-                            logger.error(f"[TRANSLATE] No content extracted from image")
-                            raise TranslationError("No content extracted from image", "CONTENT_ERROR")
-                    except Exception as img_error:
-                        logger.exception(f"[TRANSLATE] Image processing error: {str(img_error)}")
-                        self._update_translation_status_sync(db, process_id, "failed")
-                        return {
-                            "success": False,
-                            "error": f"Image processing error: {str(img_error)}"
-                        }
-                else:
-                    logger.error(f"[TRANSLATE] Unsupported file type: {file_type}")
-                    self._update_translation_status_sync(db, process_id, "failed")
-                    return {
-                        "success": False,
-                        "error": f"Unsupported file type: {file_type}"
-                    }
-                    
-                # Complete translation process
-                if len(translated_pages) > 0:
-                    logger.info(f"[TRANSLATE] Translation completed: {len(translated_pages)}/{total_pages} pages")
-                    
-                    # Update status to completed
+                    # Update progress
                     progress = db.query(TranslationProgress).filter(
                         TranslationProgress.processId == process_id
                     ).first()
                     
-                    if progress:
-                        progress.status = "completed"
-                        progress.progress = 100
-                        progress.currentPage = total_pages
+                    if not progress or progress.status == "failed":
+                        logger.warning(f"[TRANSLATE] Process was canceled or failed: {process_id}")
+                        return
+                        
+                    progress.currentPage = current_page
+                    progress.progress = int((current_page / total_pages) * 100)
+                    db.commit()
+                    
+                    logger.info(f"[TRANSLATE] Processing page {current_page}/{total_pages} for {process_id}")
+                    
+                    # Extract content
+                    html_content = await self.extract_page_content(file_content, page_index)
+                    
+                    if html_content and len(html_content.strip()) > 0:
+                        logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from page {current_page}")
+                        
+                        # Translate content
+                        translated_content = None
+                        
+                        # Split content if needed
+                        if len(html_content) > 12000:
+                            chunks = self.split_content_into_chunks(html_content, 10000)
+                            logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks")
+                            
+                            translated_chunks = []
+                            for i, chunk in enumerate(chunks):
+                                chunk_id = f"{process_id}-p{current_page}-c{i+1}"
+                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
+                                try:
+                                    chunk_result = await self.translate_chunk(
+                                        chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                    )
+                                    translated_chunks.append(chunk_result)
+                                except Exception as chunk_error:
+                                    logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(chunk_error)}")
+                                    # Continue with other chunks but mark this one as failed
+                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
+                                
+                            translated_content = self.combine_html_content(translated_chunks)
+                        else:
+                            chunk_id = f"{process_id}-p{current_page}"
+                            try:
+                                translated_content = await self.translate_chunk(
+                                    html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                )
+                            except Exception as chunk_error:
+                                logger.error(f"[TRANSLATE] Error translating page {current_page}: {str(chunk_error)}")
+                                # Create an error message instead
+                                translated_content = f"<div class='error'>Translation error on page {current_page}: {str(chunk_error)}</div>"
+                        
+                        # Save translation
+                        translation_chunk = TranslationChunk(
+                            processId=process_id,
+                            pageNumber=page_index,
+                            content=translated_content
+                        )
+                        db.add(translation_chunk)
                         db.commit()
                         
-                    # Log completion
-                    duration = time.time() - start_time
-                    logger.info(f"[TRANSLATE] Translation completed in {duration:.2f}s for {process_id}")
+                        translated_pages.append(page_index)
+                    else:
+                        logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
+
+            elif file_type in settings.SUPPORTED_DOC_TYPES:
+                # Handle non-PDF document types
+                
+                # Set total pages - simple estimate for now
+                total_pages = 1
+                if progress:
+                    progress.totalPages = total_pages
+                    progress.currentPage = 1
+                    db.commit()
+                
+                logger.info(f"[TRANSLATE] Processing document with type {file_type} for {process_id}")
+                
+                # Extract content using document processing service
+                try:
+                    # Import lazily to avoid circular imports
+                    from app.services.document_processing import document_processing_service
                     
-                    return {
-                        "success": True,
-                        "totalPages": total_pages,
-                        "translatedPages": len(translated_pages)
-                    }
-                else:
-                    logger.error(f"[TRANSLATE] No pages were translated for {process_id}")
+                    # Process the document
+                    html_content = await document_processing_service.process_text_document(
+                        file_content, 
+                        file_type
+                    )
+                    
+                    if html_content and len(html_content.strip()) > 0:
+                        logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from document")
+                        
+                        # Translate content
+                        translated_content = None
+                        
+                        # Split content if needed
+                        if len(html_content) > 12000:
+                            chunks = self.split_content_into_chunks(html_content, 10000)
+                            logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks")
+                            
+                            translated_chunks = []
+                            for i, chunk in enumerate(chunks):
+                                chunk_id = f"{process_id}-doc-c{i+1}"
+                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
+                                try:
+                                    chunk_result = await self.translate_chunk(
+                                        chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                    )
+                                    translated_chunks.append(chunk_result)
+                                except Exception as chunk_error:
+                                    logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(chunk_error)}")
+                                    # Continue with other chunks but mark this one as failed
+                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
+                                
+                            translated_content = self.combine_html_content(translated_chunks)
+                        else:
+                            chunk_id = f"{process_id}-doc"
+                            try:
+                                translated_content = await self.translate_chunk(
+                                    html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                )
+                            except Exception as chunk_error:
+                                logger.error(f"[TRANSLATE] Error translating document: {str(chunk_error)}")
+                                # Create an error message instead
+                                translated_content = f"<div class='error'>Translation error: {str(chunk_error)}</div>"
+                        
+                        # Save translation
+                        translation_chunk = TranslationChunk(
+                            processId=process_id,
+                            pageNumber=0,
+                            content=translated_content
+                        )
+                        db.add(translation_chunk)
+                        db.commit()
+                        
+                        translated_pages.append(0)
+                        logger.info(f"[TRANSLATE] Completed document translation")
+                    else:
+                        logger.error(f"[TRANSLATE] No content extracted from document with type {file_type}")
+                        self._update_translation_status_sync(db, process_id, "failed")
+                        return {
+                            "success": False,
+                            "error": f"No content extracted from document with type {file_type}"
+                        }
+                except Exception as doc_error:
+                    logger.exception(f"[TRANSLATE] Document processing error: {str(doc_error)}")
                     self._update_translation_status_sync(db, process_id, "failed")
                     return {
                         "success": False,
-                        "error": "No pages were translated"
+                        "error": f"Document processing error: {str(doc_error)}"
                     }
+            # Handle images
+            elif file_type in settings.SUPPORTED_IMAGE_TYPES:
+                # Set total pages = 1 for images
+                total_pages = 1
+                if progress:
+                    progress.totalPages = total_pages
+                    progress.currentPage = 1
+                    db.commit()
+                
+                # Extract content
+                try:
+                    html_content = await self.extract_from_image(file_content)
                     
-            except Exception as e:
-                logger.exception(f"[TRANSLATE] Translation error: {str(e)}")
+                    if html_content and len(html_content.strip()) > 0:
+                        # Translate content
+                        translated_content = None
+                        
+                        # Split content if needed
+                        if len(html_content) > 12000:
+                            chunks = self.split_content_into_chunks(html_content, 10000)
+                            translated_chunks = []
+                            for i, chunk in enumerate(chunks):
+                                chunk_id = f"{process_id}-img-c{i+1}"
+                                try:
+                                    chunk_result = await self.translate_chunk(
+                                        chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                    )
+                                    translated_chunks.append(chunk_result)
+                                except Exception as chunk_error:
+                                    logger.error(f"[TRANSLATE] Error translating image chunk {i+1}: {str(chunk_error)}")
+                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
+                                
+                            translated_content = self.combine_html_content(translated_chunks)
+                        else:
+                            chunk_id = f"{process_id}-img"
+                            try:
+                                translated_content = await self.translate_chunk(
+                                    html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                )
+                            except Exception as e:
+                                logger.error(f"[TRANSLATE] Error translating image: {str(e)}")
+                                translated_content = f"<div class='error'>Translation error: {str(e)}</div>"
+                        
+                        # Save translation
+                        translation_chunk = TranslationChunk(
+                            processId=process_id,
+                            pageNumber=0,
+                            content=translated_content
+                        )
+                        db.add(translation_chunk)
+                        db.commit()
+                        
+                        translated_pages.append(0)
+                    else:
+                        logger.error(f"[TRANSLATE] No content extracted from image")
+                        raise TranslationError("No content extracted from image", "CONTENT_ERROR")
+                except Exception as img_error:
+                    logger.exception(f"[TRANSLATE] Image processing error: {str(img_error)}")
+                    self._update_translation_status_sync(db, process_id, "failed")
+                    return {
+                        "success": False,
+                        "error": f"Image processing error: {str(img_error)}"
+                    }
+            else:
+                logger.error(f"[TRANSLATE] Unsupported file type: {file_type}")
                 self._update_translation_status_sync(db, process_id, "failed")
                 return {
                     "success": False,
-                    "error": str(e)
+                    "error": f"Unsupported file type: {file_type}"
                 }
+                
+            # Complete translation process
+            if len(translated_pages) > 0:
+                logger.info(f"[TRANSLATE] Translation completed: {len(translated_pages)}/{total_pages} pages")
+                
+                # Update status to completed
+                progress = db.query(TranslationProgress).filter(
+                    TranslationProgress.processId == process_id
+                ).first()
+                
+                if progress:
+                    progress.status = "completed"
+                    progress.progress = 100
+                    progress.currentPage = total_pages
+                    db.commit()
+                    
+                # Log completion
+                duration = time.time() - start_time
+                logger.info(f"[TRANSLATE] Translation completed in {duration:.2f}s for {process_id}")
+                
+                return {
+                    "success": True,
+                    "totalPages": total_pages,
+                    "translatedPages": len(translated_pages)
+                }
+            else:
+                logger.error(f"[TRANSLATE] No pages were translated for {process_id}")
+                self._update_translation_status_sync(db, process_id, "failed")
+                return {
+                    "success": False,
+                    "error": "No pages were translated"
+                }
+                
+        except Exception as e:
+            logger.exception(f"[TRANSLATE] Translation error: {str(e)}")
+            self._update_translation_status_sync(db, process_id, "failed")
+            return {
+                "success": False,
+                "error": str(e)
+            }
         
     def _update_translation_status_sync(self, db, process_id, status, progress=0):
         """Synchronous version of update_translation_status for the worker."""
@@ -985,16 +985,17 @@ Here is the HTML to translate:
     
     @staticmethod
     def combine_html_content(html_contents):
-            """Combine multiple HTML contents into a single document"""
-            combined = "<div class='document'>\n"
-            for content in html_contents:
-                content = re.sub(r'</?html[^>]*>', '', content)
-                content = re.sub(r'</?head[^>]*>', '', content)
-                content = re.sub(r'</?body[^>]*>', '', content)
-                combined += f"<div class='page'>\n{content}\n</div>\n"
-            combined += "</div>"
-            
-            logger.info(f"Combined {len(html_contents)} HTML content pieces into a single document of {len(combined)} chars")
-            return combined
+        """Combine multiple HTML contents into a single document"""
+        combined = "<div class='document'>\n"
+        for content in html_contents:
+            content = re.sub(r'</?html[^>]*>', '', content)
+            content = re.sub(r'</?head[^>]*>', '', content)
+            content = re.sub(r'</?body[^>]*>', '', content)
+            combined += f"<div class='page'>\n{content}\n</div>\n"
+        combined += "</div>"
+        
+        logger.info(f"Combined {len(html_contents)} HTML content pieces into a single document of {len(combined)} chars")
+        return combined
 
+# Create a singleton instance
 translation_service = TranslationService()
