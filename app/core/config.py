@@ -39,7 +39,15 @@ class Settings(BaseModel):
     MAX_FILE_SIZE: int = 20 * 1024 * 1024  # 20MB
     MAX_CHUNK_SIZE: int = 2500  # Maximum characters per chunk
     SUPPORTED_IMAGE_TYPES: List[str] = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]
-    SUPPORTED_DOC_TYPES: List[str] = ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]
+    SUPPORTED_DOC_TYPES: List[str] = [
+    "application/pdf", 
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",  # DOC files
+    "application/vnd.oasis.opendocument.text",  # ODT files
+    "text/plain",  # TXT files
+    "text/rtf",  # RTF files
+    "application/rtf"  # Alternative MIME type for RTF
+]
     
     # Default user settings
     DEFAULT_BALANCE_PAGES: int = 10

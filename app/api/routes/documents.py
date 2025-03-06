@@ -54,14 +54,34 @@ def estimate_translation_time(file_size: int, file_type: str) -> int:
     
     # Estimate number of pages
     estimated_pages = 1
+    
     if 'pdf' in file_type:
         # Rough estimate: 100KB per page for PDFs
         estimated_pages = max(1, int(file_size / (100 * 1024)))
+    elif file_type == "application/msword":
+        # DOC files: estimate 120KB per page
+        estimated_pages = max(1, int(file_size / (120 * 1024)))
+    elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        # DOCX files: estimate 80KB per page
+        estimated_pages = max(1, int(file_size / (80 * 1024)))
+    elif file_type == "application/vnd.oasis.opendocument.text":
+        # ODT files: estimate 100KB per page
+        estimated_pages = max(1, int(file_size / (100 * 1024)))
+    elif file_type in ["text/plain"]:
+        # Plain text: estimate 4KB per page (much smaller)
+        estimated_pages = max(1, int(file_size / (4 * 1024)))
+    elif file_type in ["text/rtf", "application/rtf"]:
+        # RTF files: estimate 15KB per page
+        estimated_pages = max(1, int(file_size / (15 * 1024)))
     elif file_type in settings.SUPPORTED_IMAGE_TYPES:
         estimated_pages = 1
     
-    # Average time per page based on logs: ~30-35 seconds
-    time_per_page = 35
+    # For text-based documents, processing time is generally faster per page
+    if file_type in ["text/plain", "text/rtf", "application/rtf"]:
+        time_per_page = 25  # Text documents process faster
+    else:
+        # Average time per page based on logs: ~30-35 seconds
+        time_per_page = 35
     
     return base_time + (estimated_pages * time_per_page)
 
@@ -94,9 +114,19 @@ async def translate_document(
         # Validate file type
         if file_type not in settings.SUPPORTED_IMAGE_TYPES + settings.SUPPORTED_DOC_TYPES:
             logger.error(f"Unsupported file type: {file_type}")
+            
+            # Provide a more helpful error message with supported file types
+            supported_types = []
+            supported_types.extend(["JPEG", "PNG", "WebP", "HEIC", "HEIF"])  # Image types
+            supported_types.extend(["PDF", "Word (DOC/DOCX)", "OpenDocument Text (ODT)", "Text (TXT)", "Rich Text (RTF)"])  # Document types
+            
             return {
-                "error": f"Unsupported file type: {file_type}",
-                "type": "VALIDATION_ERROR" 
+                "error": f"Unsupported file type: {file_type}. Please upload one of these supported file types: {', '.join(supported_types)}",
+                "type": "VALIDATION_ERROR",
+                "supportedTypes": {
+                    "images": settings.SUPPORTED_IMAGE_TYPES,
+                    "documents": settings.SUPPORTED_DOC_TYPES
+                }
             }
         
         # Read file content here in the request handler, before passing to background task
@@ -563,6 +593,76 @@ async def translate_document_content(
                 logger.exception(f"[TRANSLATE] Image processing error: {str(img_error)}")
                 update_translation_status(db, process_id, "failed")
                 return
+        # Handle text-based documents (DOC, DOCX, ODT, TXT, RTF)
+        elif file_type in settings.SUPPORTED_DOC_TYPES:
+            try:
+                # Set total pages based on document type
+                # For simplicity, assign 1 page per 3000 characters with a minimum of 1
+                total_pages = 1
+                progress = db.query(TranslationProgress).filter(
+                    TranslationProgress.processId == process_id
+                ).first()
+                
+                if progress:
+                    progress.totalPages = total_pages
+                    progress.currentPage = 1
+                    db.commit()
+                
+                logger.info(f"[TRANSLATE] Processing text document for {process_id}")
+                
+                # Process the document using the new method
+                html_content = await document_processing_service.process_text_document(file_content, file_type)
+                
+                if html_content and len(html_content.strip()) > 0:
+                    logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from document")
+                    
+                    # Translate content using existing logic
+                    translated_content = None
+                    
+                    # Split content if needed - use existing chunking logic
+                    if len(html_content) > 12000:
+                        chunks = translation_service.split_content_into_chunks(html_content, 10000)
+                        logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks")
+                        
+                        translated_chunks = []
+                        for i, chunk in enumerate(chunks):
+                            chunk_id = f"{process_id}-doc-c{i+1}"
+                            logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
+                            chunk_result = await translation_service.translate_chunk(
+                                chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                            )
+                            translated_chunks.append(chunk_result)
+                            
+                        translated_content = translation_service.combine_html_content(translated_chunks)
+                    else:
+                        chunk_id = f"{process_id}-doc"
+                        translated_content = await translation_service.translate_chunk(
+                            html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                        )
+                    
+                    # Save translation
+                    translation_chunk = TranslationChunk(
+                        processId=process_id,
+                        pageNumber=0,
+                        content=translated_content
+                    )
+                    db.add(translation_chunk)
+                    db.commit()
+                    
+                    # Add to translated pages
+                    translated_pages.append(0)
+                    logger.info(f"[TRANSLATE] Completed document translation")
+                    
+                else:
+                    logger.error(f"[TRANSLATE] No content extracted from document")
+                    update_translation_status(db, process_id, "failed")
+                    return
+                    
+            except Exception as doc_error:
+                logger.exception(f"[TRANSLATE] Document processing error: {str(doc_error)}")
+                update_translation_status(db, process_id, "failed")
+                return
+            
         else:
             logger.error(f"[TRANSLATE] Unsupported file type: {file_type}")
             update_translation_status(db, process_id, "failed")
