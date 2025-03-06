@@ -6,7 +6,6 @@ import tempfile
 import gc
 import logging
 from datetime import datetime
-from anthropic import Anthropic
 from app.core.config import settings
 from app.models.translation import TranslationProgress, TranslationChunk
 from typing import List, Dict, Any, Optional
@@ -15,7 +14,7 @@ from bs4 import BeautifulSoup, NavigableString
 import io
 import asyncio
 import nest_asyncio
-import app.services.document_processing
+from app.services.document_processing import document_processing_service
 
 # Configure logging
 logging.basicConfig(
@@ -36,19 +35,15 @@ class TranslationService:
         # Initialize Google Gemini
         if settings.GOOGLE_API_KEY:
             genai.configure(api_key=settings.GOOGLE_API_KEY)
-            self.gemini_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
-            logger.info("Initialized Google Gemini model")
+            # Use Gemini-2.0-flash for content extraction (better for vision tasks)
+            self.extraction_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+            # Use Gemini-2.0-flash for translation as well
+            self.translation_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+            logger.info("Initialized Google Gemini models for extraction and translation")
         else:
-            self.gemini_model = None
-            logger.warning("Google API key not configured - OCR functionality will be unavailable")
-            
-        # Initialize Anthropic Claude
-        if settings.ANTHROPIC_API_KEY:
-            self.claude_client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-            logger.info("Initialized Anthropic Claude model")
-        else:
-            self.claude_client = None
-            logger.warning("Anthropic API key not configured - translation functionality will be unavailable")
+            self.extraction_model = None
+            self.translation_model = None
+            logger.warning("Google API key not configured - extraction and translation functionality will be unavailable")
     
     def normalize_index(self, index_text):
         """Normalize index numbers by fixing common OCR and formatting errors"""
@@ -77,7 +72,7 @@ class TranslationService:
 
     async def extract_from_image(self, image_bytes: bytes) -> str:
         """Extract content from an image using Google Gemini."""
-        if not self.gemini_model:
+        if not self.extraction_model:
             logger.error("Google API key not configured for image extraction")
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
@@ -170,7 +165,7 @@ Analyze the content carefully and use the most appropriate structure for each se
             
             logger.info(f"Sending image to Gemini for analysis")
             
-            response = self.gemini_model.generate_content(
+            response = self.extraction_model.generate_content(
                 contents=[prompt, {"mime_type": "image/jpeg", "data": image_data}],
                 generation_config={"temperature": 0.1}
             )
@@ -277,7 +272,7 @@ Analyze the content carefully and use the most appropriate structure for each se
     
     async def extract_page_content(self, pdf_bytes: bytes, page_index: int) -> str:
         """Extract content from a PDF page using Google Gemini."""
-        if not self.gemini_model:
+        if not self.extraction_model:
             logger.error("Google API key not configured for PDF extraction")
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
@@ -401,7 +396,7 @@ Key Requirements:
 
 Analyze the content carefully and use the most appropriate structure for each section. Return only valid HTML."""
 
-            response = self.gemini_model.generate_content(
+            response = self.extraction_model.generate_content(
                 contents=[prompt, {"mime_type": "image/png", "data": img_bytes}],
                 generation_config={"temperature": 0.1}
             )
@@ -492,66 +487,60 @@ Analyze the content carefully and use the most appropriate structure for each se
         return await self._get_formatted_text_from_gemini_buffer(page)
     
     async def translate_chunk(self, html_content: str, from_lang: str, to_lang: str, retries: int = 3, chunk_id: str = None) -> str:
-        """Translate a chunk of HTML content using Anthropic Claude."""
-        if not self.claude_client:
-            logger.error("Anthropic API key not configured for translation")
-            raise TranslationError("Anthropic API key not configured", "CONFIG_ERROR")
+        """Translate a chunk of HTML content using Google Gemini."""
+        if not self.translation_model:
+            logger.error("Google API key not configured for translation")
+            raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
         if not chunk_id:
             chunk_id = f"{hash(html_content)}"[:7]
             
         start_time = time.time()
         logger.info(f"Starting translation of chunk {chunk_id} ({len(html_content)} chars) from {from_lang} to {to_lang}")
-        logger.info(f"Using API key: {settings.ANTHROPIC_API_KEY[:10]}...{settings.ANTHROPIC_API_KEY[-5:]}")
         
         last_error = None
         
         for attempt in range(1, retries + 1):
             try:
-                # Improved system message with explicit instructions to avoid commentary
-                system_message = """You are translating HTML content. Your ONLY task is to translate the text within HTML tags from the source language to the target language.
+                # Create a prompt specifically designed for HTML translation
+                prompt = f"""Translate the text content in this HTML from {from_lang} to {to_lang}.
 
 IMPORTANT RULES:
-1. OUTPUT ONLY THE TRANSLATED HTML - do not include any explanations, introductions, or commentary
-2. Do not add phrases like "Here's the translation" or "Translated content" to your response
-3. Preserve ALL HTML tags and attributes exactly as they appear in the original
-4. Maintain document structure, layout, classes, and styling
-5. Keep all CSS classes, ID attributes, and other HTML attributes unchanged
-6. Preserve table structures and form layouts exactly
-7. Translate ONLY the visible text content that would be displayed to users
+1. ONLY translate the human-readable text content - DO NOT translate HTML tags, attributes, CSS classes or IDs.
+2. Preserve ALL HTML tags, attributes, CSS classes, and structure exactly as they appear in the input.
+3. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML.
+4. Keep all spacing, indentation, and formatting consistent with the input.
+5. Ensure your output is valid HTML that can be rendered directly in a browser.
+6. Don't translate content within <style> tags.
 
-Your entire response must be valid HTML that could be directly used in a webpage without any modifications."""
+Here is the HTML to translate:
 
-                # User message with clear, concise instructions
-                user_message = f"""Translate the text in this HTML from {from_lang} to {to_lang}.
+{html_content}
+"""
 
-{html_content}"""
-
-                logger.info(f"Sending chunk {chunk_id} to Claude for translation (attempt {attempt}/{retries})")
+                logger.info(f"Sending chunk {chunk_id} to Gemini for translation (attempt {attempt}/{retries})")
                 translation_start = time.time()
                 
-                # Use a more widely available model instead of claude-3-5-sonnet-20241022
-                model_to_use = "claude-3-5-sonnet-20241022"
-                logger.info(f"Using model: {model_to_use} for translation")
-                
-                response = self.claude_client.messages.create(
-                    model=model_to_use,
-                    max_tokens=4096,
-                    system=system_message,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": user_message
-                        }
-                    ]
+                # Use a lower temperature for more reliable translations
+                response = self.translation_model.generate_content(
+                    prompt,
+                    generation_config={
+                        "temperature": 0.1,
+                        "top_p": 0.95,
+                        "top_k": 40,
+                        "max_output_tokens": 8192
+                    }
                 )
                 
                 translation_duration = time.time() - translation_start
-                logger.info(f"Claude completed translation for chunk {chunk_id} in {translation_duration:.2f} seconds")
+                logger.info(f"Gemini completed translation for chunk {chunk_id} in {translation_duration:.2f} seconds")
                 
-                translated_text = response.content[0].text.strip()
+                translated_text = response.text.strip()
                 
-                # Additional cleanup for any commentary that might still appear
+                # Clean up any code block formatting that might be added
+                translated_text = translated_text.replace('```html', '').replace('```', '').strip()
+                
+                # Additional cleanup for any commentary that might be added
                 cleanup_patterns = [
                     r"^Translation:\s*",
                     r"^Here's the translation:\s*",
@@ -578,6 +567,7 @@ Your entire response must be valid HTML that could be directly used in a webpage
                     else:
                         logger.error(f"Failed to find any HTML tags in response")
                 
+                # Check for empty result
                 if len(translated_text) < 1:
                     logger.error(f"Empty translation result for chunk {chunk_id}")
                     raise TranslationError("Empty translation result", "CONTENT_ERROR")
@@ -763,9 +753,6 @@ Your entire response must be valid HTML that could be directly used in a webpage
                     # Extract content using document processing service
                     try:
                         # Access the document processing service through the module
-                        document_processing_service = app.services.document_processing.document_processing_service
-                        
-                        # Process the document
                         html_content = await document_processing_service.process_text_document(
                             file_content, 
                             file_type
