@@ -31,29 +31,45 @@ class DocxGeneratorService:
                 section.bottom_margin = Inches(1)
             
             # Clean up the HTML content before processing
+            # Remove DOCTYPE declarations, comments, and XML declarations
+            html_content = re.sub(r'<!DOCTYPE[^>]*>', '', html_content, flags=re.IGNORECASE)
+            html_content = re.sub(r'<!--.*?-->', '', html_content, flags=re.DOTALL)
+            html_content = re.sub(r'<\?xml[^>]*\?>', '', html_content)
             html_content = html_content.replace('&nbsp;', ' ')
             
             # Parse the HTML content
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Handle document structure based on the 'document' class
+            # Remove all meta, title tags - we don't need them in the DOCX
+            for tag in soup.find_all(['meta', 'title']):
+                tag.decompose()
+            
+            # Extract style tags but don't remove them yet (we might need style info)
+            styles = soup.find_all('style')
+            
+            # Find if there's a document div structure
             document_div = soup.find('div', class_='document')
+            
             if document_div:
                 # Process each page in the document
                 for page_div in document_div.find_all('div', class_='page'):
-                    # Remove any DOCTYPE, meta tags, and style tags
-                    for tag in page_div.find_all(['meta', 'style', 'title']):
-                        tag.decompose()
+                    # Now remove style tags from this page
+                    for style_tag in page_div.find_all('style'):
+                        style_tag.decompose()
                     
                     # Process the content of the page
-                    self._process_page_content(doc, page_div)
+                    self._process_content(doc, page_div)
                     
                     # Add page break between pages if this isn't the last page
                     if page_div != document_div.find_all('div', class_='page')[-1]:
                         doc.add_page_break()
             else:
                 # Fall back to processing the entire content if no document structure
-                self._process_page_content(doc, soup)
+                # First remove style tags from the soup
+                for style_tag in styles:
+                    style_tag.decompose()
+                
+                self._process_content(doc, soup)
             
             # Save document to bytes
             docx_stream = io.BytesIO()
@@ -74,38 +90,64 @@ class DocxGeneratorService:
             error_stream.seek(0)
             return error_stream.getvalue()
 
-    def _process_page_content(self, doc, page_content):
-        """Process the content of a page."""
-        # Extract the content, skipping doctype and other irrelevant tags
-        content_elements = []
-        for element in page_content.children:
+    def _process_content(self, doc, parent_element):
+        """Process all relevant content within an element."""
+        # First pass: find all top-level elements that should be processed
+        top_elements = []
+        
+        for element in parent_element.children:
             # Skip NavigableString, doctype, and other irrelevant elements
-            if isinstance(element, NavigableString) or element.name in ['!doctype', 'meta', 'style', 'title']:
-                continue
-            if element.name:
-                content_elements.append(element)
+            if isinstance(element, NavigableString):
+                if element.strip():
+                    # Only add non-empty strings
+                    top_elements.append(element)
+            elif element.name and element.name not in ['!doctype', 'meta', 'title', 'style', 'script']:
+                top_elements.append(element)
         
         # If no elements found, try to look deeper
-        if not content_elements:
-            content_elements = page_content.find_all(['h1', 'h2', 'h3', 'h4', 'p', 'table', 'section', 'article'])
+        if not top_elements:
+            top_elements = parent_element.find_all(
+                ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'table', 'section', 'article', 'div', 'ul', 'ol']
+            )
         
         # Process each content element in order
-        for element in content_elements:
+        for element in top_elements:
             self._process_element(doc, element)
 
     def _process_element(self, doc, element):
         """Process an HTML element based on its type."""
+        # Skip empty or None elements
+        if element is None:
+            return
+            
+        if isinstance(element, NavigableString):
+            if element.strip():
+                doc.add_paragraph(element.strip())
+            return
+            
+        # Skip processing certain elements
+        if element.name in ['!doctype', 'meta', 'title', 'style', 'script']:
+            return
+            
+        # Process element based on its type
         if element.name in ['article', 'section', 'div']:
-            # For container elements, process their children
-            for child in element.children:
-                if isinstance(child, NavigableString):
-                    if child.strip():
-                        doc.add_paragraph(child.strip())
-                elif child.name:
-                    self._process_element(doc, child)
+            # Check if this is a section with a specific class
+            class_value = element.get('class', [])
+            if isinstance(class_value, list) and 'text-content' in class_value:
+                # For text-content sections, process as a unit
+                p = doc.add_paragraph()
+                self._process_text_content(p, element)
+            else:
+                # For container elements, process their children
+                for child in element.children:
+                    if isinstance(child, NavigableString):
+                        if child.strip():
+                            doc.add_paragraph(child.strip())
+                    elif child.name:
+                        self._process_element(doc, child)
                     
-        elif element.name in ['h1', 'h2', 'h3', 'h4']:
-            # Process headings
+        elif element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            # Process headings - convert h1-h6 to appropriate heading levels
             level = int(element.name[1])
             heading = doc.add_heading(level=level)
             self._process_text_content(heading, element)
@@ -146,12 +188,36 @@ class DocxGeneratorService:
                     if child.name == 'p':
                         para = doc.add_paragraph()
                         self._process_text_content(para, child)
+                        
+        elif element.name == 'a':
+            # For standalone links, add as paragraph
+            para = doc.add_paragraph()
+            self._process_text_content(para, element)
+            
+        elif element.name == 'br':
+            # Add line break
+            doc.add_paragraph()
+            
+        elif element.name in ['span', 'strong', 'em', 'b', 'i', 'u']:
+            # For inline elements that appear at top level, wrap in paragraph
+            para = doc.add_paragraph()
+            self._process_text_content(para, element)
 
     def _process_text_content(self, paragraph, element):
         """Process the text content of an element including formatting."""
+        if element is None:
+            return
+            
         if isinstance(element, NavigableString):
-            if element.strip():
-                paragraph.add_run(element.strip())
+            text = element.strip()
+            if text:
+                paragraph.add_run(text)
+            return
+        
+        # Check if the element has a text node directly
+        if element.string and element.string.strip():
+            run = paragraph.add_run(element.string.strip())
+            self._apply_text_formatting(run, element)
             return
             
         # Process children
@@ -160,32 +226,73 @@ class DocxGeneratorService:
                 text = child.strip()
                 if text:
                     run = paragraph.add_run(text)
+                    self._apply_text_formatting(run, element)
             elif child.name == 'br':
                 paragraph.add_run().add_break()
             elif child.name in ['strong', 'b']:
-                run = paragraph.add_run(child.get_text())
+                run = paragraph.add_run(child.get_text().strip())
                 run.bold = True
+                self._apply_text_formatting(run, child)
             elif child.name in ['em', 'i']:
-                run = paragraph.add_run(child.get_text())
+                run = paragraph.add_run(child.get_text().strip())
                 run.italic = True
+                self._apply_text_formatting(run, child)
             elif child.name == 'u':
-                run = paragraph.add_run(child.get_text())
+                run = paragraph.add_run(child.get_text().strip())
                 run.underline = True
+                self._apply_text_formatting(run, child)
             elif child.name == 'a':
-                run = paragraph.add_run(child.get_text())
-                run.underline = True
-                run.font.color.rgb = RGBColor(0, 0, 255)
+                text = child.get_text().strip()
+                if text:
+                    run = paragraph.add_run(text)
+                    run.underline = True
+                    run.font.color.rgb = RGBColor(0, 0, 255)
+                    # Add hyperlink if href is present
+                    href = child.get('href')
+                    if href:
+                        # Store href as a comment for reference (python-docx doesn't support hyperlinks directly)
+                        run.add_comment(f"Link: {href}")
             elif child.name == 'span':
                 # Process span with potential inline styles
-                run = paragraph.add_run(child.get_text())
-                style = child.get('style', '')
-                if 'bold' in style or 'font-weight' in style:
-                    run.bold = True
-                if 'italic' in style or 'font-style: italic' in style:
-                    run.italic = True
+                run = paragraph.add_run(child.get_text().strip())
+                self._apply_text_formatting(run, child)
             else:
                 # Recursively process other elements
                 self._process_text_content(paragraph, child)
+
+    def _apply_text_formatting(self, run, element):
+        """Apply text formatting based on element attributes and styles."""
+        # Check direct attributes
+        if element.name in ['strong', 'b'] or element.get('style', '').find('font-weight:') >= 0:
+            run.bold = True
+        if element.name in ['em', 'i'] or element.get('style', '').find('font-style:italic') >= 0:
+            run.italic = True
+        if element.name == 'u' or element.get('style', '').find('text-decoration:underline') >= 0:
+            run.underline = True
+            
+        # Check style attribute for more complex formatting
+        style = element.get('style', '')
+        
+        # Font color
+        color_match = re.search(r'color\s*:\s*#?([0-9a-fA-F]{6})', style)
+        if color_match:
+            hex_color = color_match.group(1)
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            run.font.color.rgb = RGBColor(r, g, b)
+            
+        # Font size
+        size_match = re.search(r'font-size\s*:\s*(\d+)pt', style)
+        if size_match:
+            font_size = int(size_match.group(1))
+            run.font.size = Pt(font_size)
+            
+        # Font family
+        font_match = re.search(r'font-family\s*:\s*([^;]+)', style)
+        if font_match:
+            font_family = font_match.group(1).strip().split(',')[0].strip("'\"")
+            run.font.name = font_family
 
     def _process_table(self, doc, table_elem):
         """Process HTML tables with proper structure preservation."""
@@ -223,17 +330,29 @@ class DocxGeneratorService:
         for i, row in enumerate(rows):
             cells = row.find_all(['td', 'th'])
             
+            # Handle case with fewer cells than max_cols
+            if len(cells) < max_cols:
+                # Fill remaining cells with empty content
+                for j in range(len(cells), max_cols):
+                    table.cell(i, j).text = ""
+            
             # Process each cell
             for j, cell in enumerate(cells):
                 if j < max_cols:
                     try:
                         table_cell = table.cell(i, j)
                         
-                        # Handle cell content
-                        para = table_cell.paragraphs[0]
+                        # Clear the default paragraph
+                        if table_cell.paragraphs:
+                            p = table_cell.paragraphs[0]
+                            # Remove any existing content
+                            for run in p.runs:
+                                p._element.remove(run._element)
+                        else:
+                            p = table_cell.add_paragraph()
                         
                         # Process text content
-                        self._process_text_content(para, cell)
+                        self._process_text_content(p, cell)
                         
                         # Check for colspan
                         colspan = int(cell.get('colspan', 1))
@@ -247,9 +366,23 @@ class DocxGeneratorService:
                         
                         # Apply cell formatting
                         if cell.name == 'th':
-                            for run in para.runs:
-                                run.bold = True
+                            # Make header cells bold
+                            for paragraph in table_cell.paragraphs:
+                                for run in paragraph.runs:
+                                    run.bold = True
                             self._set_cell_shading(table_cell, 'f2f2f2')  # Light gray for headers
+                            
+                        # Handle alignment
+                        align = cell.get('align')
+                        style = cell.get('style', '')
+                        if align or 'text-align' in style:
+                            for paragraph in table_cell.paragraphs:
+                                if align == 'center' or 'text-align:center' in style:
+                                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                elif align == 'right' or 'text-align:right' in style:
+                                    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                                elif align == 'left' or 'text-align:left' in style:
+                                    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
                     except Exception as e:
                         logger.warning(f"Error processing table cell: {str(e)}")
