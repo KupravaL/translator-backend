@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup, NavigableString
 import io
 import asyncio
 import nest_asyncio
-from app.services.document_processing import document_processing_service
+import app.services.document_processing
 
 # Configure logging
 logging.basicConfig(
@@ -750,7 +750,6 @@ Your entire response must be valid HTML that could be directly used in a webpage
 
                 elif file_type in settings.SUPPORTED_DOC_TYPES:
                     # Handle non-PDF document types
-                    # Use document_processing_service to extract content
                     
                     # Set total pages - simple estimate for now
                     total_pages = 1
@@ -763,12 +762,14 @@ Your entire response must be valid HTML that could be directly used in a webpage
                     
                     # Extract content using document processing service
                     try:
-                        import importlib
-                        document_processing_module = importlib.import_module('app.services.document_processing')
-                        document_processing_service = document_processing_module.document_processing_service
+                        # Access the document processing service through the module
+                        document_processing_service = app.services.document_processing.document_processing_service
                         
                         # Process the document
-                        html_content = await document_processing_service.process_text_document(file_content, file_type)
+                        html_content = await document_processing_service.process_text_document(
+                            file_content, 
+                            file_type
+                        )
                         
                         if html_content and len(html_content.strip()) > 0:
                             logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from document")
@@ -831,7 +832,7 @@ Your entire response must be valid HTML that could be directly used in a webpage
                         return {
                             "success": False,
                             "error": f"Document processing error: {str(doc_error)}"
-                        }            
+                        }    
                 # Handle images
                 elif file_type in settings.SUPPORTED_IMAGE_TYPES:
                     # Set total pages = 1 for images
