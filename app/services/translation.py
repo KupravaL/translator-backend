@@ -88,70 +88,40 @@ class TranslationService:
             
             logger.info(f"Image saved to temporary file: {img_path}")
             
-            prompt = """Analyze this document and convert it to properly formatted HTML with intelligent structure detection.
+            prompt = """Analyze this document and extract its content with precise structural preservation:
 
-Key Requirements:
-1. Structure Detection:
-   - Identify if content is tabular/columnar or regular flowing text
-   - Use tables ONLY for truly tabular content with clear columns and rows
-   - For form-like content (label: value pairs), use flex layout without visible borders
-   - For regular paragraphs and text, use simple <p> tags without any table structure
-   - Preserve exact spacing and layout while using appropriate HTML elements
+1. Content Organization:
+   - Maintain the original hierarchical structure (headers, sections, subsections)
+   - Preserve paragraph boundaries and logical content grouping
+   - Keep related data points together on the same line when they form a logical unit
+   - Maintain chronological or numerical sequence where present
 
-2. Document Elements:
-   - Use semantic HTML: <article>, <section>, <header>, <p>, <table> as appropriate
-   - Use <h1> through <h6> for hierarchical headings
-   - For columns/forms without visible borders, use:
-     ```html
-     <div class="form-row">
-       <div class="label">Label:</div>
-       <div class="value">Value</div>
-     </div>
-     ```
-   - For actual tables with visible borders use:
-     ```html
-     <table class="data-table">
-       <tr><td>Content</td></tr>
-     </table>
-     ```
+2. Formatting Guidelines:
+   - Clearly distinguish headers and section titles from body content
+   - Preserve tabular data relationships without splitting related columns
+   - Maintain proper indentation to show hierarchical relationships
+   - Keep contextually related numbers, measurements, or values together with their labels
 
-3. Specific Cases:
-   A. Regular Text:
-      ```html
-      <p>Regular paragraph text goes here without any table structure.</p>
-      ```
-   
-   B. Form-like Content (no visible borders):
-      ```html
-      <div class="form-section">
-        <div class="form-row">
-          <div class="label">Name:</div>
-          <div class="value">John Smith</div>
-        </div>
-      </div>
-      ```
-   
-   C. True Table Content:
-      ```html
-      <table class="data-table">
-        <tr>
-          <th>Header 1</th>
-          <th>Header 2</th>
-        </tr>
-        <tr>
-          <td>Data 1</td>
-          <td>Data 2</td>
-        </tr>
-      </table>
-      ```
+3. Special Handling:
+   - For lists of measurements/values, keep all parameters and their values together
+   - For date-based content, ensure dates are formatted consistently as section headers
+   - For forms or structured data, preserve the relationship between fields and values
+   - For technical/scientific data, maintain the relationship between identifiers and their measurements
 
-4. CSS Classes:
-   - Use 'form-section' for form-like content
-   - Use 'data-table' for true tables
-   - Use 'text-content' for regular flowing text
-   - Add 'no-borders' class to elements that shouldn't show borders
+4. Layout Preservation:
+   - Identify when content is presented in columns and preserve column relationships
+   - Avoid arbitrary line breaks that split conceptually unified information
+   - Maintain spacing that indicates logical grouping in the original
+   - Preserve the flow of information in a way that maintains readability
 
-Analyze the content carefully and use the most appropriate structure for each section. Return only valid HTML."""
+5. HTML Considerations:
+   - Do not introduce HTML tags into plain text extraction unless specifically requested
+   - If HTML formatting is present in the original, preserve semantic structure but not decorative elements
+   - Properly handle tables by maintaining row and column relationships
+   - If converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, etc.)
+   - Ensure any HTML output is valid and properly nested
+
+Extract the content with minimal unnecessary line breaks, using them only to separate distinct items or sections. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
 
             # Read image data directly from the file
             with open(img_path, 'rb') as f:
