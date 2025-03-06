@@ -227,7 +227,7 @@ class DocumentProcessingService:
                     
                     # Use Gemini through translation_service
                     response = translation_service.gemini_model.generate_content(
-                        contents=[prompt, {"mime_type": "application/pdf", "data": doc_data}],
+                        contents=[prompt, {"mime_type": file_type, "data": doc_data}],
                         generation_config={"temperature": 0.1}
                     )
                     
