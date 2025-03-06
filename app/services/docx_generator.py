@@ -1,346 +1,428 @@
 import io
 import base64
-import pandas as pd
+import re
 from bs4 import BeautifulSoup, NavigableString
 from docx import Document
 from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+import logging
 
+logger = logging.getLogger(__name__)
 
 class DocxGeneratorService:
     def generate_docx(self, html_content: str) -> bytes:
-        """Convert HTML to DOCX with full content capture and structured formatting."""
-        doc = Document()
-        # Configure default paragraph spacing and font
-        style = doc.styles['Normal']
-        style.font.name = 'Arial'
-        style.font.size = Pt(11)
-        
-        # Clean up the HTML content before processing
-        # Replace any non-breaking spaces with regular spaces
-        html_content = html_content.replace('&nbsp;', ' ')
-        
-        # Parse the HTML content
-        soup = BeautifulSoup(html_content, 'html.parser')
-
-        # Debug: Print the structure to understand what we're working with
-        print("Document structure found:", soup.prettify()[:500])
-        
-        # Remove any standalone "html" text nodes that aren't part of actual content
-        for text_node in soup.find_all(text=True):
-            if text_node.strip().lower() == "html" and not text_node.parent.name in ['style', 'script', 'pre', 'code']:
-                text_node.extract()
-
-        # Remove <style> and <script> tags but preserve their content for reference
-        styles = {}
-        for i, tag in enumerate(soup.find_all('style')):
-            styles[f'style_{i}'] = tag.string
-            tag.decompose()
+        """Convert HTML to DOCX with improved structure preservation."""
+        try:
+            doc = Document()
             
-        for tag in soup.find_all('script'):
-            tag.decompose()
-
-        def apply_text_formatting(run, element):
-            """Apply text formatting from HTML elements to Word runs."""
-            if element.name in ['strong', 'b'] or 'font-weight: bold' in element.get('style', ''):
-                run.bold = True
-            if element.name in ['em', 'i'] or 'font-style: italic' in element.get('style', ''):
-                run.italic = True
-            if element.name == 'u' or 'text-decoration: underline' in element.get('style', ''):
-                run.underline = True
+            # Configure default paragraph and document settings
+            style = doc.styles['Normal']
+            style.font.name = 'Arial'
+            style.font.size = Pt(11)
             
-            # Handle font color if specified
-            if element.get('style') and 'color:' in element.get('style'):
-                color_str = element.get('style').split('color:')[1].split(';')[0].strip()
-                # This is a simple implementation - for production you'd want more robust color parsing
-                if color_str.startswith('#'):
-                    color = color_str[1:]
-                    run.font.color.rgb = RGBColor(int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16))
+            # Set proper document margins
+            sections = doc.sections
+            for section in sections:
+                section.left_margin = Inches(1)
+                section.right_margin = Inches(1)
+                section.top_margin = Inches(1)
+                section.bottom_margin = Inches(1)
+            
+            # Clean up the HTML content before processing
+            html_content = html_content.replace('&nbsp;', ' ')
+            
+            # Create proper heading styles for document hierarchy
+            self._ensure_heading_styles(doc)
+            
+            # Parse the HTML content
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Debug logging
+            logger.info(f"Starting document conversion, HTML length: {len(html_content)}")
+            
+            # Remove style and script tags
+            for tag in soup.find_all(['style', 'script']):
+                tag.decompose()
+            
+            # Process document body
+            self._process_document_body(doc, soup)
+            
+            # Save document to bytes
+            docx_stream = io.BytesIO()
+            doc.save(docx_stream)
+            docx_stream.seek(0)
+            
+            logger.info("DOCX generation completed successfully")
+            return docx_stream.getvalue()
+            
+        except Exception as e:
+            logger.error(f"Error generating DOCX: {str(e)}")
+            # Create a simple error document
+            error_doc = Document()
+            error_doc.add_heading("Error Creating Document", 0)
+            error_doc.add_paragraph(f"An error occurred while creating the document: {str(e)}")
+            error_stream = io.BytesIO()
+            error_doc.save(error_stream)
+            error_stream.seek(0)
+            return error_stream.getvalue()
 
-        def process_inline_element(paragraph, element):
-            """Recursively process inline elements with improved handling of nested content."""
+    def _ensure_heading_styles(self, doc):
+        """Ensure all heading styles are properly configured."""
+        heading_sizes = {
+            'Heading 1': 16,
+            'Heading 2': 14,
+            'Heading 3': 13,
+            'Heading 4': 12,
+        }
+        
+        for name, size in heading_sizes.items():
+            style = doc.styles[name]
+            style.font.name = 'Arial'
+            style.font.size = Pt(size)
+            style.font.bold = True
+            # Add proper spacing
+            style.paragraph_format.space_before = Pt(12)
+            style.paragraph_format.space_after = Pt(6)
+
+    def _process_document_body(self, doc, soup):
+        """Process the main document body with improved structure handling."""
+        # Find the main content
+        main_content = soup.body or soup
+        
+        # Track if we're in a table section to avoid nested tables
+        in_table_section = False
+        
+        # Process elements in order
+        for element in self._get_content_elements(main_content):
             if isinstance(element, NavigableString):
-                text = str(element).strip()
-                if text and text.lower() != "html":  # Skip standalone "html" text
-                    run = paragraph.add_run(text)
-                    # Apply any parent formatting
-                    if element.parent and element.parent.name in ['strong', 'b', 'em', 'i', 'u', 'span']:
-                        apply_text_formatting(run, element.parent)
-                return
+                if element.strip():
+                    p = doc.add_paragraph()
+                    p.add_run(element.strip())
+                continue
                 
-            if element.name == 'br':
-                paragraph.add_run().add_break()
-                return
-                
-            if element.name in ['strong', 'b', 'em', 'i', 'u', 'span', 'a']:
-                # Process all children with this element's formatting
-                for child in element.children:
-                    if isinstance(child, NavigableString):
-                        text = str(child).strip()
-                        if text and text.lower() != "html":  # Skip standalone "html" text
-                            run = paragraph.add_run(text)
-                            apply_text_formatting(run, element)
-                    else:
-                        # For nested formatting elements, combine parent's formatting
-                        process_inline_element(paragraph, child)
-                return
-                
-            # For any other element, just process its children
-            for child in element.children:
-                process_inline_element(paragraph, child)
-
-        def process_paragraph_content(paragraph, element):
-            """Process block-level elements with better text flow preservation."""
-            # Check if element is empty or whitespace only
-            if not element.get_text(strip=True) or element.get_text(strip=True).lower() == "html":
-                return
-                
-            # Process all children
-            for child in element.children:
-                if isinstance(child, NavigableString):
-                    text = str(child).strip()
-                    if text and text.lower() != "html":  # Skip standalone "html" text
-                        paragraph.add_run(text)
-                elif child.name == 'br':
-                    paragraph.add_run().add_break()
-                elif child.name in ['strong', 'b', 'em', 'i', 'u', 'span', 'a']:
-                    process_inline_element(paragraph, child)
-                else:
-                    # For other elements, just process their content
-                    process_inline_element(paragraph, child)
-
-        def extract_style_property(element, property_name):
-            """Extract a CSS property value from an element's style attribute."""
-            style = element.get('style', '')
-            if not style:
-                return None
-                
-            for prop in style.split(';'):
-                prop = prop.strip()
-                if prop.startswith(property_name + ':'):
-                    return prop.split(':', 1)[1].strip()
-            return None
-
-        def handle_table(table_elem):
-            """Improved table handling with better structure preservation."""
-            # Count rows and columns
-            rows = table_elem.find_all('tr')
-            if not rows:
-                return
-                
-            # Find the maximum number of cells in any row
-            max_cols = 0
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                max_cols = max(max_cols, len(cells))
-                
-            if max_cols == 0:
-                return
-                
-            # Create the table
-            table = doc.add_table(rows=len(rows), cols=max_cols)
-            table.style = 'Table Grid'
+            # Handle by element type
+            if element.name in ['h1', 'h2', 'h3', 'h4']:
+                # Clear flag when hitting a heading
+                in_table_section = False
+                self._process_heading(doc, element)
             
-            # Process header rows first
-            thead = table_elem.find('thead')
-            header_rows = []
-            if thead:
-                header_rows = thead.find_all('tr')
-                for i, row in enumerate(header_rows):
-                    cells = row.find_all(['th', 'td'])
-                    for j, cell in enumerate(cells):
-                        if j < max_cols and i < len(table.rows):
-                            cell_para = table.rows[i].cells[j].paragraphs[0]
-                            # Make header cells bold
-                            run = cell_para.add_run()
-                            run.bold = True
-                            process_paragraph_content(cell_para, cell)
-                            
-                            # Set text alignment based on style or defaults
-                            if cell.get('style') and 'text-align: center' in cell.get('style'):
-                                cell_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            elif element.name == 'table':
+                in_table_section = True
+                self._process_table(doc, element)
             
-            # Process body rows
-            tbody = table_elem.find('tbody')
-            body_rows = tbody.find_all('tr') if tbody else rows
-            start_row = len(header_rows) if thead else 0
+            elif element.name in ['ul', 'ol']:
+                in_table_section = False
+                self._process_list(doc, element)
             
-            for i, row in enumerate(body_rows):
-                row_idx = i + start_row
-                if row_idx >= len(table.rows):
+            elif element.name in ['p', 'div']:
+                # Skip empty paragraphs
+                if not element.get_text(strip=True):
                     continue
                     
-                cells = row.find_all(['td', 'th'])
-                for j, cell in enumerate(cells):
-                    if j < max_cols:
-                        cell_para = table.rows[row_idx].cells[j].paragraphs[0]
-                        process_paragraph_content(cell_para, cell)
+                # Check if this looks like a table row but isn't in a table
+                if not in_table_section and self._looks_like_table_row(element):
+                    # This could be a table row represented as a paragraph
+                    # Try to collect adjacent similar elements to form a table
+                    table_rows = self._collect_table_rows(element)
+                    if len(table_rows) > 1:
+                        self._create_table_from_paragraphs(doc, table_rows)
+                        continue
                         
-                        # Handle cell alignment from inline style
-                        align = extract_style_property(cell, 'text-align')
-                        if align == 'center':
-                            cell_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        elif align == 'right':
-                            cell_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-            
-            # Adjust column widths if specified in styles
-            no_borders = 'no-borders' in table_elem.get('class', [])
-            if no_borders:
-                # Remove borders
-                table_no_borders(table)
+                # Process as normal paragraph
+                self._process_paragraph(doc, element)
                 
-            return table
+            elif element.name == 'hr':
+                doc.add_paragraph().add_run('_' * 50)
+                
+            else:
+                # Default handling for other elements
+                text = element.get_text(strip=True)
+                if text:
+                    p = doc.add_paragraph()
+                    p.add_run(text)
 
-        def handle_form_section(section):
-            """Improved form section handling with better layout preservation."""
-            # Form sections are special layouts that need custom handling
-            for form_row in section.find_all(class_='form-row'):
-                # Create a 2-column table for each form row
-                table = doc.add_table(rows=1, cols=2)
-                table.autofit = False
-                
-                # Set column widths based on the HTML layout
-                table.columns[0].width = Inches(2.0)  # Label
-                table.columns[1].width = Inches(4.0)  # Value
-                
-                # Don't add borders for form tables to match the HTML layout
-                table.style = 'Table Grid'
-                table_no_borders(table)
-                
-                word_row = table.rows[0]
-                
-                # Process label and value
-                label = form_row.find(class_='label')
-                value = form_row.find(class_='value')
-                
-                if label:
-                    cell = word_row.cells[0]
-                    para = cell.paragraphs[0]
-                    run = para.add_run()
-                    run.bold = True  # Labels are typically bold
-                    process_paragraph_content(para, label)
-                    
-                if value:
-                    cell = word_row.cells[1]
-                    para = cell.paragraphs[0]
-                    process_paragraph_content(para, value)
+    def _get_content_elements(self, parent):
+        """Get meaningful content elements, filtering out empty nodes."""
+        elements = []
+        for child in parent.children:
+            if isinstance(child, NavigableString):
+                if child.strip():
+                    elements.append(child)
+            elif child.name not in ['style', 'script', 'meta']:
+                elements.append(child)
+        return elements
 
-        def table_no_borders(table):
-            """Remove borders from a table."""
-            # This function removes all borders from a table
-            tbl = table._element.xpath('//w:tbl')
-            if tbl:
-                tbl = tbl[-1]  # Get the most recently added table
-                for cell in tbl.xpath('.//w:tc'):
-                    tcPr = cell.xpath('./w:tcPr')
-                    if tcPr:
-                        tcPr = tcPr[0]
-                        tcBorders = OxmlElement('w:tcBorders')
-                        for border in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
-                            element = OxmlElement(f'w:{border}')
-                            element.set(qn('w:val'), 'nil')
-                            tcBorders.append(element)
-                        tcPr.append(tcBorders)
-
-        def handle_list(list_elem):
-            """Process HTML lists with proper indentation and bullets/numbers."""
-            is_ordered = list_elem.name == 'ol'
-            items = list_elem.find_all('li', recursive=False)
-            
-            for i, item in enumerate(items):
-                # Create paragraph with appropriate list style
-                p = doc.add_paragraph(style='List Bullet' if not is_ordered else 'List Number')
-                
-                # Process the list item content
-                process_paragraph_content(p, item)
-                
-                # Handle nested lists
-                nested_lists = item.find_all(['ul', 'ol'], recursive=False)
-                for nested_list in nested_lists:
-                    handle_list(nested_list)  # Recursive handling of nested lists
-
-        # Find the main content - look for specific containers
-        main_content = soup.find('div', class_='document') or soup.find('article') or soup.body or soup
+    def _process_heading(self, doc, element):
+        """Process HTML headings with proper formatting."""
+        level = int(element.name[1])  # h1 -> 1, h2 -> 2, etc.
+        heading = doc.add_heading(level=level)
+        self._process_text_content(heading, element)
         
-        # Debug - print main content structure
-        print("Main content found:", main_content.name, "with classes:", main_content.get('class', []))
+        # For article headings in legal documents, add special formatting
+        text = element.get_text(strip=True)
+        if re.match(r'^(Article|Section|მუხლი)\s+\d+', text):
+            heading.paragraph_format.space_after = Pt(6)
+            heading.paragraph_format.keep_with_next = True
+
+    def _process_paragraph(self, doc, element):
+        """Process paragraph elements preserving formatting."""
+        # Skip if empty
+        if not element.get_text(strip=True):
+            return
+            
+        # Create paragraph
+        para = doc.add_paragraph()
         
-        # Process all elements in the main container
-        def process_container(container):
-            """Process all elements in a container element."""
-            if not container:
-                return
+        # Check for alignment
+        if 'align' in element.attrs:
+            if element['align'] == 'center':
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            elif element['align'] == 'right':
+                para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                 
-            for element in list(container.children):
-                if isinstance(element, NavigableString):
-                    text = element.strip()
-                    if text and text.lower() != "html":  # Skip standalone "html" text
-                        doc.add_paragraph(text)
-                elif element.name:
-                    # Handle headings with appropriate levels
-                    if element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                        level = int(element.name[1])
-                        heading = doc.add_heading(level=level)
-                        process_paragraph_content(heading, element)
-                        
-                    # Handle paragraphs and text content
-                    elif element.name == 'p' or (element.get('class') and 'text-content' in element.get('class')):
-                        para = doc.add_paragraph()
-                        process_paragraph_content(para, element)
-                        
-                    # Handle tables with improved formatting
-                    elif element.name == 'table':
-                        handle_table(element)
-                        
-                    # Handle lists properly
-                    elif element.name in ['ul', 'ol']:
-                        handle_list(element)
-                        
-                    # Handle divs and sections with special treatment for form sections
-                    elif element.name in ['div', 'section']:
-                        if element.get('class') and 'form-section' in element.get('class'):
-                            handle_form_section(element)
-                        else:
-                            # For other divs, process their content
-                            process_container(element)
+        # Check for indentation in style
+        style = element.get('style', '')
+        if 'margin-left' in style:
+            match = re.search(r'margin-left:\s*(\d+)(px|pt|em)', style)
+            if match:
+                value = int(match.group(1))
+                unit = match.group(2)
+                # Convert to inches (approximate)
+                if unit == 'px':
+                    para.paragraph_format.left_indent = Pt(value)
+                elif unit == 'pt':
+                    para.paragraph_format.left_indent = Pt(value)
+                elif unit == 'em':
+                    para.paragraph_format.left_indent = Pt(value * 12)  # Rough approximation
+        
+        # Process paragraph content
+        self._process_text_content(para, element)
+
+    def _process_text_content(self, paragraph, element):
+        """Process the text content of an element including formatting."""
+        if isinstance(element, NavigableString):
+            if element.strip():
+                paragraph.add_run(element.strip())
+            return
+            
+        # Process children
+        for child in element.children:
+            if isinstance(child, NavigableString):
+                text = child.strip()
+                if text:
+                    run = paragraph.add_run(text)
+            elif child.name == 'br':
+                paragraph.add_run().add_break()
+            elif child.name in ['strong', 'b']:
+                run = paragraph.add_run(child.get_text())
+                run.bold = True
+            elif child.name in ['em', 'i']:
+                run = paragraph.add_run(child.get_text())
+                run.italic = True
+            elif child.name == 'u':
+                run = paragraph.add_run(child.get_text())
+                run.underline = True
+            elif child.name == 'a':
+                run = paragraph.add_run(child.get_text())
+                run.underline = True
+                run.font.color.rgb = RGBColor(0, 0, 255)
+            elif child.name == 'span':
+                # Process span with potential inline styles
+                run = paragraph.add_run(child.get_text())
+                style = child.get('style', '')
+                if 'bold' in style or 'font-weight' in style:
+                    run.bold = True
+                if 'italic' in style or 'font-style: italic' in style:
+                    run.italic = True
+            else:
+                # Recursively process other elements
+                self._process_text_content(paragraph, child)
+
+    def _process_table(self, doc, table_elem):
+        """Process HTML tables with proper structure preservation."""
+        rows = table_elem.find_all('tr')
+        if not rows:
+            return
+            
+        # Determine table dimensions
+        max_cols = 0
+        for row in rows:
+            cells = row.find_all(['td', 'th'])
+            max_cols = max(max_cols, len(cells))
+            
+        if max_cols == 0:
+            return
+            
+        # Create the table
+        table = doc.add_table(rows=len(rows), cols=max_cols)
+        table.style = 'Table Grid'
+        
+        # Process header rows first
+        for i, row in enumerate(rows):
+            cells = row.find_all(['td', 'th'])
+            
+            # Process each cell
+            for j, cell in enumerate(cells):
+                if j < max_cols:
+                    table_cell = table.cell(i, j)
+                    para = table_cell.paragraphs[0]
                     
-                    # Handle article elements similar to divs
-                    elif element.name == 'article':
-                        process_container(element)
+                    # Process alignment
+                    if cell.get('align') == 'center':
+                        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    elif cell.get('align') == 'right':
+                        para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        
+                    # Check for rowspan/colspan
+                    rowspan = int(cell.get('rowspan', 1))
+                    colspan = int(cell.get('colspan', 1))
                     
-                    # For other elements, try to process their content
+                    if rowspan > 1 or colspan > 1:
+                        # Handle spanning cells
+                        self._merge_cells(table, i, j, i + rowspan - 1, j + colspan - 1)
+                    
+                    # Bold for header cells
+                    if cell.name == 'th':
+                        run = para.add_run(cell.get_text(strip=True))
+                        run.bold = True
                     else:
-                        para = doc.add_paragraph()
-                        process_paragraph_content(para, element)
+                        self._process_text_content(para, cell)
         
-        # Process the main content
-        process_container(main_content)
-        
-        # If the document has no content at this point, try to extract all text from the HTML
-        if len(doc.paragraphs) <= 1 and not doc.paragraphs[0].text:
-            print("Document appears empty, trying direct text extraction")
-            for text_node in soup.find_all(text=True):
-                text = text_node.strip()
-                if (text and 
-                    text.lower() != "html" and 
-                    text_node.parent.name not in ['style', 'script', 'meta', 'head']):
-                    doc.add_paragraph(text)
-        
-        # Set consistent paragraph spacing for better readability
-        for paragraph in doc.paragraphs:
-            paragraph.paragraph_format.space_after = Pt(8)
+        return table
 
-        # Save document
-        docx_stream = io.BytesIO()
-        doc.save(docx_stream)
-        docx_stream.seek(0)
-        return docx_stream.getvalue()
+    def _merge_cells(self, table, start_row, start_col, end_row, end_col):
+        """Merge cells in the table - helper for spanning cells."""
+        try:
+            cell_1 = table.cell(start_row, start_col)
+            cell_2 = table.cell(end_row, end_col)
+            cell_1.merge(cell_2)
+        except Exception as e:
+            logger.warning(f"Failed to merge cells: {e}")
+
+    def _process_list(self, doc, list_elem):
+        """Process HTML lists maintaining proper structure."""
+        is_ordered = list_elem.name == 'ol'
+        items = list_elem.find_all('li', recursive=False)
+        
+        for i, item in enumerate(items):
+            # Determine list style based on type
+            style_name = 'List Number' if is_ordered else 'List Bullet'
+            
+            # Create paragraph with list style
+            p = doc.add_paragraph(style=style_name)
+            
+            # Process content
+            self._process_text_content(p, item)
+            
+            # Handle nested lists
+            for nested_list in item.find_all(['ul', 'ol'], recursive=False):
+                # Increase indentation for nested lists
+                self._process_list(doc, nested_list)
+
+    def _looks_like_table_row(self, element):
+        """Check if an element looks like it should be part of a table row."""
+        text = element.get_text(strip=True)
+        
+        # Check for tab-separated content that might represent columns
+        if '\t' in text:
+            return True
+            
+        # Check for elements with a clear column structure
+        child_texts = [c.get_text(strip=True) for c in element.children if not isinstance(c, NavigableString)]
+        if len(child_texts) >= 2:
+            return True
+            
+        # Look for specific patterns like "Code [number]: [description]"
+        if re.match(r'^\d+\.?\s+.*?:\s+.*$', text):
+            return True
+            
+        return False
+
+    def _collect_table_rows(self, start_element):
+        """Collect consecutive elements that appear to be table rows."""
+        rows = [start_element]
+        sibling = start_element.find_next_sibling()
+        
+        while sibling and self._looks_like_table_row(sibling):
+            rows.append(sibling)
+            sibling = sibling.find_next_sibling()
+            
+        return rows
+
+    def _create_table_from_paragraphs(self, doc, elements):
+        """Create a table from a series of paragraph-like elements."""
+        # Determine number of columns (analyze the text pattern)
+        max_cols = 0
+        for elem in elements:
+            text = elem.get_text(strip=True)
+            
+            # Check if tab delimited
+            if '\t' in text:
+                cols = len(text.split('\t'))
+                max_cols = max(max_cols, cols)
+                continue
+                
+            # Check for column-like pattern (e.g., "Code: Description")
+            match = re.match(r'^\s*(\d+\.?\s+)?([^:]+):\s*(.*)\s*$', text)
+            if match:
+                max_cols = max(max_cols, 3)  # Code, Label, Value
+                continue
+                
+            # Check child structure
+            cols = sum(1 for c in elem.children if not isinstance(c, NavigableString) and c.get_text(strip=True))
+            max_cols = max(max_cols, cols if cols > 0 else 2)
+        
+        # Create table with appropriate dimensions
+        max_cols = max(max_cols, 2)  # Ensure at least 2 columns
+        table = doc.add_table(rows=len(elements), cols=max_cols)
+        table.style = 'Table Grid'
+        
+        # Fill the table
+        for i, elem in enumerate(elements):
+            text = elem.get_text(strip=True)
+            
+            # Handle different patterns
+            if '\t' in text:
+                # Tab-delimited content
+                cols = text.split('\t')
+                for j, col in enumerate(cols):
+                    if j < max_cols:
+                        cell = table.cell(i, j)
+                        cell.text = col.strip()
+            
+            elif re.match(r'^\s*(\d+\.?\s+)?([^:]+):\s*(.*)\s*$', text):
+                # Pattern like: "Code: Description" or "11001: Document Analysis"
+                match = re.match(r'^\s*(\d+\.?\s+)?([^:]+):\s*(.*)\s*$', text)
+                parts = [match.group(1) or "", match.group(2) or "", match.group(3) or ""]
+                
+                for j, part in enumerate(parts):
+                    if j < max_cols:
+                        cell = table.cell(i, j)
+                        cell.text = part.strip()
+            
+            else:
+                # Use children structure if available
+                children = [c for c in elem.children if not isinstance(c, NavigableString) and c.get_text(strip=True)]
+                
+                if children:
+                    for j, child in enumerate(children):
+                        if j < max_cols:
+                            cell = table.cell(i, j)
+                            para = cell.paragraphs[0]
+                            self._process_text_content(para, child)
+                else:
+                    # Default to single cell content
+                    cell = table.cell(i, 0)
+                    cell.text = text
+                    # Merge cells if only one column of content
+                    if max_cols > 1:
+                        self._merge_cells(table, i, 0, i, max_cols - 1)
 
     def get_base64_docx(self, docx_data: bytes) -> str:
         """Convert DOCX data to a base64 string."""
         return base64.b64encode(docx_data).decode('utf-8')
 
-
+# Create a singleton instance
 docx_generator_service = DocxGeneratorService()
