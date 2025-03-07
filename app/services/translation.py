@@ -96,6 +96,7 @@ class TranslationService:
    - Preserve paragraph boundaries and logical content grouping
    - Keep related data points together on the same line when they form a logical unit
    - Maintain chronological or numerical sequence where present
+   - IMPORTANT: If there are images inside the document, skip them. Do not process images inside the document. 
 
 2. Formatting Guidelines:
    - Clearly distinguish headers and section titles from body content
