@@ -96,7 +96,8 @@ class TranslationService:
    - Preserve paragraph boundaries and logical content grouping
    - Keep related data points together on the same line when they form a logical unit
    - Maintain chronological or numerical sequence where present
-   - IMPORTANT: If there are images inside the document, skip them. Do not process images inside the document. 
+   - IMPORTANT: If there are images inside the document, skip them. Do not process images inside the document.
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. 
 
 2. Formatting Guidelines:
    - Clearly distinguish headers and section titles from body content
@@ -120,7 +121,7 @@ class TranslationService:
    - Do not introduce HTML tags into plain text extraction unless specifically requested
    - If HTML formatting is present in the original, preserve semantic structure but not decorative elements
    - Properly handle tables by maintaining row and column relationships
-   - If converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, etc.)
+   - If converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
    - Ensure any HTML output is valid and properly nested
 
 Extract the content with minimal unnecessary line breaks, using them only to separate distinct items or sections. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
