@@ -88,10 +88,11 @@ class TranslationService:
             
             logger.info(f"Image saved to temporary file: {img_path}")
             
-            prompt = """Analyze this document and extract its content with precise structural preservation:
+            prompt = """Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
 
 1. Content Organization:
    - Maintain the original hierarchical structure (headers, sections, subsections)
+   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
    - Preserve paragraph boundaries and logical content grouping
    - Keep related data points together on the same line when they form a logical unit
    - Maintain chronological or numerical sequence where present
