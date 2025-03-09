@@ -8,7 +8,7 @@ import fitz
 import asyncio
 import logging
 import traceback  # Added for detailed error tracing
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks, Query, Request, Response
 from sqlalchemy.orm import Session, load_only
 from typing import Optional, List
 from app.core.database import get_db, SessionLocal
@@ -749,6 +749,8 @@ def update_translation_status(db, process_id, status, progress=0):
 @router.get("/status/{process_id}", summary="Check translation status")
 async def get_translation_status(
     process_id: str,
+    request: Request,
+    response: Response,
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -756,9 +758,15 @@ async def get_translation_status(
     Get the status of a translation process.
     
     Returns current progress, status, and page information.
+    Enhanced to handle auth issues more gracefully.
     """
     start_time = time.time()
     logger.info(f"[STATUS] Status check for {process_id}")
+    
+    # Check for auth-related headers from client
+    status_retry = request.headers.get("X-Status-Retry", "false") == "true"
+    if status_retry:
+        logger.info(f"[STATUS] Status retry request after auth issue for {process_id}")
     
     try:
         # Use optimized query with select columns only
@@ -781,10 +789,14 @@ async def get_translation_status(
         
         if not progress:
             logger.error(f"[STATUS] Process ID not found: {process_id}")
+            
+            # Add a special header to indicate we checked but found nothing
+            response.headers["X-Status-Not-Found"] = "true"
+            
             raise HTTPException(status_code=404, detail="Translation process not found")
         
         # Prepare response
-        response = {
+        result = {
             "processId": progress.processId,
             "status": progress.status,
             "progress": progress.progress,
@@ -793,16 +805,33 @@ async def get_translation_status(
             "fileName": progress.fileName
         }
         
+        # Add last update timestamp to help client track stale data
+        response.headers["X-Last-Updated"] = datetime.now().isoformat()
+        
+        # For long-running processes, add a header to indicate the server is still processing
+        if progress.status == 'in_progress' and progress.currentPage > 0:
+            response.headers["X-Processing-Active"] = "true"
+        
         # Log status check
         duration = round((time.time() - start_time) * 1000)
         logger.info(f"[STATUS] Status check completed in {duration}ms: status={progress.status}, progress={progress.progress}%")
         
-        return response
-    except HTTPException:
+        return result
+    except HTTPException as http_ex:
+        # If it's a 401/403 error, add special headers to guide the client
+        if http_ex.status_code in (401, 403):
+            logger.warning(f"[STATUS] Auth error during status check for {process_id}: {http_ex.detail}")
+            response.headers["X-Status-Auth-Error"] = "true"
+            # Re-raise with the same status
+            raise
+        # Re-raise other HTTP exceptions
         raise
     except Exception as e:
         # Log error but return default status
         logger.exception(f"[STATUS] Error checking status: {str(e)}")
+        
+        # Add header to indicate error occurred
+        response.headers["X-Status-Error"] = "true"
         
         # Return minimal response to prevent client errors
         return {
@@ -812,8 +841,9 @@ async def get_translation_status(
             "currentPage": 0,
             "totalPages": 0,
             "fileName": None,
+            "error": "Failed to retrieve status",
+            "errorDetail": str(e) if settings.DEBUG else None
         }
-
 
 @router.get("/active", summary="List active translations")
 async def list_active_translations(

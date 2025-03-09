@@ -27,12 +27,25 @@ class BalanceResponse(BaseModel):
 @router.get("/me/balance", response_model=BalanceResponse)
 async def get_balance(
     response: Response,
+    request: Request,
     current_user: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get user balance information."""
+    """
+    Get user balance information.
+    Enhanced with better auth error handling.
+    """
     try:
+        # Track the request start time
+        start_time = time.time()
+        
+        # Check for auth-related headers from client
+        is_retry = request.headers.get("X-Balance-Retry", "false") == "true"
+        if is_retry:
+            logger.info(f"Balance retry request after auth issue for user: {current_user}")
+        
         if not current_user:
+            logger.warning("Balance request without valid authentication")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required"
@@ -43,6 +56,31 @@ async def get_balance(
         
         # Get user balance
         balance = balance_service.get_user_balance(db, current_user)
+        
+        # Check if this is the default balance
+        is_default = getattr(balance, 'is_default', False)
+        if is_default:
+            logger.warning(f"Returning default balance for user: {current_user}")
+            response.headers["X-Default-Balance"] = "true"
+        
+        # Calculate time remaining for token if available
+        try:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header.replace("Bearer ", "")
+                _, time_remaining = get_token_expiration(token)
+                if time_remaining is not None:
+                    # Add token expiration info to response
+                    if time_remaining < 300:  # Less than 5 minutes
+                        response.headers["X-Token-Expiring-Soon"] = "true"
+                    response.headers["X-Token-Expires-In"] = str(int(time_remaining))
+        except Exception as token_error:
+            logger.error(f"Error checking token expiration: {token_error}")
+        
+        # Add timing information
+        duration = round((time.time() - start_time) * 1000)
+        response.headers["X-Request-Duration"] = str(duration)
+        logger.info(f"Balance retrieved in {duration}ms for user: {current_user}")
         
         # Return balance information
         return {
@@ -63,7 +101,7 @@ async def get_balance(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve balance: {str(e)}"
         )
-
+    
 @router.get("/debug/balance")
 async def debug_balance(
     request: Request,

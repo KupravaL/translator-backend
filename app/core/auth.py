@@ -12,8 +12,8 @@ import logging
 
 from app.core.config import settings
 
-# Configure logging - make sure to use the correct logger name
-logger = logging.getLogger("auth")  # This should be 'auth', not 'translation'
+# Configure logging
+logger = logging.getLogger("auth")
 
 # HTTP Bearer security scheme with auto_error=True to enforce authentication
 security = HTTPBearer(auto_error=True)
@@ -98,27 +98,105 @@ def get_token_expiration(token):
         logger.error(f"Error extracting token expiration: {e}")
         return None, None
 
+# Add function to log detailed token info
+def log_token_details(token, source="auth"):
+    """Log detailed token information for debugging purposes."""
+    try:
+        # Decode without verification
+        unverified_payload = jwt.decode(token, options={"verify_signature": False})
+        
+        # Extract essential claims
+        sub = unverified_payload.get('sub', 'unknown')
+        iss = unverified_payload.get('iss', 'unknown')
+        exp = unverified_payload.get('exp', 0)
+        iat = unverified_payload.get('iat', 0)
+        
+        # Calculate times
+        now = datetime.now()
+        exp_time = datetime.fromtimestamp(exp) if exp else None
+        iat_time = datetime.fromtimestamp(iat) if iat else None
+        
+        # Time remaining
+        time_remaining = (exp_time - now).total_seconds() if exp_time else 0
+        minutes = int(time_remaining // 60)
+        seconds = int(time_remaining % 60)
+        
+        # Log the details
+        logger.info(f"Token details ({source}):")
+        logger.info(f"  Subject: {sub}")
+        logger.info(f"  Issuer: {iss}")
+        logger.info(f"  Issued: {iat_time} ({datetime.now() - iat_time if iat_time else 'unknown'} ago)")
+        logger.info(f"  Expires: {exp_time} (in {minutes}m {seconds}s)")
+        
+        if time_remaining < 600:  # Less than 10 minutes
+            logger.warning(f"Token expires soon: {minutes}m {seconds}s remaining")
+        
+        return {
+            "sub": sub,
+            "iss": iss,
+            "exp": exp,
+            "iat": iat,
+            "expires_at": exp_time.isoformat() if exp_time else None,
+            "issued_at": iat_time.isoformat() if iat_time else None,
+            "time_remaining": time_remaining,
+            "minutes_remaining": minutes,
+            "seconds_remaining": seconds
+        }
+    except Exception as e:
+        logger.error(f"Error logging token details: {e}")
+        return None
+
 def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security), 
     db: Session = Depends(get_db),
     request: Request = None,
     response: Response = None
 ):
-    """Validate Clerk JWT token and return the user_id."""
+    """
+    Enhanced function to validate Clerk JWT token and return the user_id.
+    Includes improved token expiration handling and informative headers.
+    """
     token = credentials.credentials
+    
+    # Log more detailed token information
+    log_token_details(token, "request")
     
     # Check if token is about to expire
     exp_time, time_remaining = get_token_expiration(token)
     if exp_time and time_remaining is not None:
         if time_remaining < 0:
             logger.warning(f"Token already expired by {-time_remaining:.2f} seconds")
+            # Add X-Token-Expired header to inform client
+            if response:
+                response.headers["X-Token-Expired"] = "true"
+                # Don't add X-Token-Expires-In for expired tokens
         else:
             logger.info(f"Token expires in {time_remaining:.2f} seconds")
             
-            # If token is about to expire (less than 5 minutes), add a header to notify the client
-            if time_remaining < 300 and response:
-                response.headers["X-Token-Expiring-Soon"] = "true"
+            # Set token expiration headers with different warning levels
+            if response:
+                # Add remaining time for all requests
                 response.headers["X-Token-Expires-In"] = str(int(time_remaining))
+                
+                # Add different warning headers based on expiration time
+                if time_remaining < 60:  # Less than 1 minute
+                    response.headers["X-Token-Critical"] = "true"
+                    response.headers["X-Token-Expiring-Soon"] = "true"
+                    logger.warning("Token critically close to expiration")
+                elif time_remaining < 300:  # Less than 5 minutes
+                    response.headers["X-Token-Expiring-Soon"] = "true"
+                    logger.warning("Token expiring soon")
+                elif time_remaining < 600:  # Less than 10 minutes
+                    response.headers["X-Token-Expiry-Warning"] = "true"
+                    logger.info("Token expiration warning")
+    
+    # Check if this is a status endpoint request
+    is_status_endpoint = False
+    if request and request.url:
+        path = request.url.path
+        if '/documents/status/' in path or '/me/balance' in path:
+            is_status_endpoint = True
+            logger.info(f"Status endpoint request: {path}")
     
     try:
         # First try with the PyJWKClient
@@ -186,6 +264,16 @@ def get_current_user(
                 logger.error("Token has expired")
                 if response:
                     response.headers["X-Token-Expired"] = "true"
+                
+                # Special treatment for status endpoint requests
+                if is_status_endpoint:
+                    # For status endpoints, we want to include a helpful message
+                    # that guides the frontend to refresh the token
+                    logger.info("Status endpoint with expired token - adding helpful headers")
+                    if response:
+                        response.headers["X-Status-Auth-Error"] = "true"
+                        response.headers["X-Auth-Action-Required"] = "refresh"
+                
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED, 
                     detail="Token has expired - please login again",
@@ -195,7 +283,8 @@ def get_current_user(
                 logger.error(f"Token validation failed: {str(e)}")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED, 
-                    detail=f"Token validation failed: {str(e)}"
+                    # Continuing from previous code
+                detail=f"Token validation failed: {str(e)}"
                 )
 
         # Ensure `sub` field exists
@@ -217,6 +306,11 @@ def get_current_user(
             # Continue without failing the request if DB error occurs
             # The balance API will handle missing records
 
+        # If token is about to expire, add a special header for frontend to refresh
+        if time_remaining is not None and time_remaining < 300 and response:  # Less than 5 minutes
+            response.headers["X-Token-Refresh-Required"] = "true"
+            logger.info(f"Added token refresh required header for user {user_id}")
+
         logger.info(f"Authentication successful for user: {user_id}")
         return user_id  # Return user ID
 
@@ -227,6 +321,12 @@ def get_current_user(
         logger.error("Token has expired")
         if response:
             response.headers["X-Token-Expired"] = "true"
+            
+        # For status endpoints, add additional headers to help frontend
+        if is_status_endpoint and response:
+            response.headers["X-Status-Auth-Error"] = "true"
+            response.headers["X-Auth-Action-Required"] = "refresh"
+            
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, 
             detail="Token has expired - please login again",
@@ -234,6 +334,9 @@ def get_current_user(
         )
     except jwt.InvalidTokenError as e:
         logger.error(f"Invalid token: {str(e)}")
+        if response:
+            response.headers["X-Invalid-Token"] = "true"
+            
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {str(e)}")
     except Exception as e:
         error_msg = str(e)
@@ -246,6 +349,11 @@ def get_current_user(
         if "expired" in error_msg:
             if response:
                 response.headers["X-Token-Expired"] = "true"
+                # Add additional headers for status endpoints
+                if is_status_endpoint:
+                    response.headers["X-Status-Auth-Error"] = "true"
+                    response.headers["X-Auth-Action-Required"] = "refresh"
+                    
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, 
                               detail="Token has expired - please login again",
                               headers={"X-Token-Expired": "true"})
@@ -266,5 +374,6 @@ def verify_webhook_signature(request: Request):
 
         # TODO: Implement actual webhook signature verification using svix library
         return True
-    except Exception:
+    except Exception as e:
+        logger.error(f"Webhook verification error: {str(e)}")
         return False
