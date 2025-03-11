@@ -302,70 +302,62 @@ Extract the content with minimal unnecessary line breaks, using them only to sep
         img_bytes = pix.tobytes(output="png")
         
         try:
-            prompt = """Analyze this document and convert it to properly formatted HTML with intelligent structure detection.
+            prompt = """Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
 
-Key Requirements:
-1. Structure Detection:
-   - Identify if content is tabular/columnar or regular flowing text
-   - Use tables ONLY for truly tabular content with clear columns and rows
-   - For form-like content (label: value pairs), use flex layout without visible borders
-   - For regular paragraphs and text, use simple <p> tags without any table structure
-   - Preserve exact spacing and layout while using appropriate HTML elements
+Core Requirements:
+1. Structure Analysis:
+   - Identify whether content is tabular data, form fields, or flowing text
+   - Use appropriate HTML elements based on content type
+   - Only use <table> for genuinely tabular information
+   - Use flex layouts for form-like content with label:value pairs
+   - Apply paragraph tags for standard text without forcing tabular structure
+   - Maintain original spacing and layout using proper HTML semantics
 
-2. Document Elements:
-   - Use semantic HTML: <article>, <section>, <header>, <p>, <table> as appropriate
-   - Use <h1> through <h6> for hierarchical headings
-   - For columns/forms without visible borders, use:
-     ```html
+2. HTML Element Selection:
+   - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
+   - Use heading tags (<h1> through <h6>) to maintain hierarchy
+   - For form-like content, implement:
      <div class="form-row">
        <div class="label">Label:</div>
        <div class="value">Value</div>
      </div>
-     ```
-   - For actual tables with visible borders use:
-     ```html
+   - For actual tabular data use:
      <table class="data-table">
-       <tr><td>Content</td></tr>
+       <tr><th>Header</th></tr>
+       <tr><td>Data</td></tr>
      </table>
-     ```
 
-3. Specific Cases:
-   A. Regular Text:
-      ```html
-      <p>Regular paragraph text goes here without any table structure.</p>
-      ```
+3. Content Type Handling:
+   A. Standard Text:
+      <p class="text-content">Regular paragraph text without table structure.</p>
    
-   B. Form-like Content (no visible borders):
-      ```html
+   B. Form Content (no visible borders):
       <div class="form-section">
         <div class="form-row">
-          <div class="label">Name:</div>
-          <div class="value">John Smith</div>
+          <div class="label">Field Name:</div>
+          <div class="value">Field Value</div>
         </div>
       </div>
-      ```
    
-   C. True Table Content:
-      ```html
+   C. Tabular Data:
       <table class="data-table">
         <tr>
-          <th>Header 1</th>
-          <th>Header 2</th>
+          <th>Column 1</th>
+          <th>Column 2</th>
         </tr>
         <tr>
-          <td>Data 1</td>
-          <td>Data 2</td>
+          <td>Value 1</td>
+          <td>Value 2</td>
         </tr>
       </table>
-      ```
 
-4. CSS Classes:
-   - Use 'form-section' for form-like content
-   - Use 'data-table' for true tables
-   - Use 'text-content' for regular flowing text
-   - Add 'no-borders' class to elements that shouldn't show borders
+4. CSS Class Implementation:
+   - "form-section" for form content containers
+   - "data-table" for genuine tables
+   - "text-content" for regular text blocks
+   - "no-borders" for elements that should appear borderless
 
-Analyze the content carefully and use the most appropriate structure for each section. Return only valid HTML."""
+Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
 
             response = self.extraction_model.generate_content(
                 contents=[prompt, {"mime_type": "image/png", "data": img_bytes}],
