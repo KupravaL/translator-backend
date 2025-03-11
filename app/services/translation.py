@@ -123,6 +123,7 @@ class TranslationService:
    - Properly handle tables by maintaining row and column relationships
    - If converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
    - Ensure any HTML output is valid and properly nested
+   - The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
 
 Extract the content with minimal unnecessary line breaks, using them only to separate distinct items or sections. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
 
