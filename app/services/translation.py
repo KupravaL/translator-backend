@@ -93,10 +93,10 @@ class TranslationService:
 1. Content Organization:
    - Maintain the original hierarchical structure (headers, sections, subsections)
    - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
+   - IMPORTANT: Do not generate HTML FOR IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
    - Preserve paragraph boundaries and logical content grouping
    - Keep related data points together on the same line when they form a logical unit
    - Maintain chronological or numerical sequence where present
-   - IMPORTANT: If there are images inside the document, skip them. Do not process images inside the document.
    - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. 
 
 2. Formatting Guidelines:
@@ -123,7 +123,6 @@ class TranslationService:
    - Properly handle tables by maintaining row and column relationships
    - If converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
    - Ensure any HTML output is valid and properly nested
-   - The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
 
 Extract the content with minimal unnecessary line breaks, using them only to separate distinct items or sections. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
 
