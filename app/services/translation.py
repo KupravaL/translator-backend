@@ -963,7 +963,7 @@ Carefully analyze each section of the document and apply the most appropriate HT
     def split_content_into_chunks(self, content: str, max_size: int) -> List[str]:
         """
         Split content into chunks of maximum size while preserving HTML structure.
-        Language-agnostic implementation for universal translation support.
+        Enhanced with detailed chunk boundary logging.
         """
         logger.info(f"Splitting content of length {len(content)} into chunks (max size: {max_size})")
         
@@ -976,6 +976,16 @@ Carefully analyze each section of the document and apply the most appropriate HT
             # Use BeautifulSoup to parse the HTML
             soup = BeautifulSoup(content, 'html.parser')
             
+            # Log the full document structure for debugging
+            document_structure = []
+            for element in soup.find_all(['div', 'h1', 'h2', 'h3', 'p', 'table']):
+                if element.name and element.get('class'):
+                    document_structure.append(f"{element.name}.{'.'.join(element.get('class'))} - {element.get_text()[:30]}...")
+                elif element.name:
+                    document_structure.append(f"{element.name} - {element.get_text()[:30]}...")
+                    
+            logger.info(f"Document structure overview: {' > '.join(document_structure[:10])}...")
+            
             # Check if we have a document/page structure
             has_document_structure = bool(soup.find('div', class_='document'))
             
@@ -985,12 +995,17 @@ Carefully analyze each section of the document and apply the most appropriate HT
             if pages:
                 logger.info(f"Found {len(pages)} page divs to split by")
                 
+                # Log each page's starting content for debugging
+                for i, page in enumerate(pages):
+                    page_text = page.get_text()[:100].replace('\n', ' ')
+                    logger.info(f"Page {i+1} starts with: {page_text}...")
+                
                 # If we have pages, split by page
                 chunks = []
                 current_chunk = ""
                 current_pages = []
                 
-                for page in pages:
+                for i, page in enumerate(pages):
                     page_html = str(page)
                     
                     # If adding this page would exceed max size, start a new chunk
@@ -1000,9 +1015,21 @@ Carefully analyze each section of the document and apply the most appropriate HT
                             chunk = f'<div class="document">{current_chunk}</div>'
                         else:
                             chunk = current_chunk
-                            
+                        
+                        # Log the chunk boundaries for debugging
+                        first_page_idx = i - len(current_pages)
+                        last_page_idx = i - 1
+                        logger.info(f"Created chunk containing pages {first_page_idx+1}-{last_page_idx+1}")
+                        
+                        # Log the start and end of the chunk content
+                        soup_chunk = BeautifulSoup(chunk, 'html.parser')
+                        chunk_text = soup_chunk.get_text()
+                        chunk_start = chunk_text[:100].replace('\n', ' ')
+                        chunk_end = chunk_text[-100:].replace('\n', ' ')
+                        logger.info(f"Chunk starts with: {chunk_start}...")
+                        logger.info(f"Chunk ends with: ...{chunk_end}")
+                        
                         chunks.append(chunk)
-                        logger.info(f"Created chunk with {len(current_pages)} pages, size: {len(chunk)}")
                         
                         # Start a new chunk with this page
                         current_chunk = page_html
@@ -1018,11 +1045,37 @@ Carefully analyze each section of the document and apply the most appropriate HT
                         chunk = f'<div class="document">{current_chunk}</div>'
                     else:
                         chunk = current_chunk
-                        
+                    
+                    # Log the last chunk
+                    first_page_idx = len(pages) - len(current_pages)
+                    last_page_idx = len(pages) - 1
+                    logger.info(f"Created final chunk containing pages {first_page_idx+1}-{last_page_idx+1}")
+                    
+                    # Log the start and end of the chunk content
+                    soup_chunk = BeautifulSoup(chunk, 'html.parser')
+                    chunk_text = soup_chunk.get_text()
+                    chunk_start = chunk_text[:100].replace('\n', ' ')
+                    chunk_end = chunk_text[-100:].replace('\n', ' ')
+                    logger.info(f"Final chunk starts with: {chunk_start}...")
+                    logger.info(f"Final chunk ends with: ...{chunk_end}")
+                    
                     chunks.append(chunk)
-                    logger.info(f"Created final chunk with {len(current_pages)} pages, size: {len(chunk)}")
                 
                 logger.info(f"Split content into {len(chunks)} chunks by pages")
+                
+                # Verify chunk continuity
+                if len(chunks) > 1:
+                    for i in range(1, len(chunks)):
+                        prev_chunk = BeautifulSoup(chunks[i-1], 'html.parser').get_text()
+                        curr_chunk = BeautifulSoup(chunks[i], 'html.parser').get_text()
+                        
+                        prev_end = prev_chunk[-50:].replace('\n', ' ').strip()
+                        curr_start = curr_chunk[:50].replace('\n', ' ').strip()
+                        
+                        logger.info(f"Continuity check between chunks {i} and {i+1}:")
+                        logger.info(f"  Chunk {i} ends with: ...{prev_end}")
+                        logger.info(f"  Chunk {i+1} starts with: {curr_start}...")
+                
                 return chunks
                 
             else:
@@ -1040,12 +1093,18 @@ Carefully analyze each section of the document and apply the most appropriate HT
                 elements = [el for el in elements if el.name or (isinstance(el, str) and el.strip())]
                 logger.info(f"Found {len(elements)} significant elements to distribute into chunks")
                 
+                # Log sample of elements for debugging
+                for i, element in enumerate(elements[:5]):
+                    if i < 5:  # Log just the first 5 elements for brevity
+                        element_text = str(element)[:100].replace('\n', ' ')
+                        logger.info(f"Element {i+1} sample: {element_text}...")
+                
                 # Create chunks based on these elements
                 chunks = []
                 current_chunk = ""
                 current_elements = []
                 
-                for element in elements:
+                for i, element in enumerate(elements):
                     # Convert element to string
                     element_str = str(element)
                     
@@ -1056,9 +1115,19 @@ Carefully analyze each section of the document and apply the most appropriate HT
                             chunk = f'<div class="document"><div class="page">{current_chunk}</div></div>'
                         else:
                             chunk = f'<div class="page">{current_chunk}</div>'
-                            
+                        
+                        # Log chunk details for debugging
+                        logger.info(f"Created chunk with elements {i-len(current_elements)}-{i-1}")
+                        
+                        # Log the start and end of the chunk content
+                        soup_chunk = BeautifulSoup(chunk, 'html.parser')
+                        chunk_text = soup_chunk.get_text()
+                        chunk_start = chunk_text[:100].replace('\n', ' ')
+                        chunk_end = chunk_text[-100:].replace('\n', ' ')
+                        logger.info(f"Chunk starts with: {chunk_start}...")
+                        logger.info(f"Chunk ends with: ...{chunk_end}")
+                        
                         chunks.append(chunk)
-                        logger.info(f"Created chunk with {len(current_elements)} elements, size: {len(chunk)}")
                         
                         # Start a new chunk with this element
                         current_chunk = element_str
@@ -1074,11 +1143,37 @@ Carefully analyze each section of the document and apply the most appropriate HT
                         chunk = f'<div class="document"><div class="page">{current_chunk}</div></div>'
                     else:
                         chunk = f'<div class="page">{current_chunk}</div>'
-                        
+                    
+                    # Log final chunk details for debugging
+                    first_element_idx = len(elements) - len(current_elements)
+                    last_element_idx = len(elements) - 1
+                    logger.info(f"Created final chunk with elements {first_element_idx+1}-{last_element_idx+1}")
+                    
+                    # Log the start and end of the chunk content
+                    soup_chunk = BeautifulSoup(chunk, 'html.parser')
+                    chunk_text = soup_chunk.get_text()
+                    chunk_start = chunk_text[:100].replace('\n', ' ')
+                    chunk_end = chunk_text[-100:].replace('\n', ' ')
+                    logger.info(f"Final chunk starts with: {chunk_start}...")
+                    logger.info(f"Final chunk ends with: ...{chunk_end}")
+                    
                     chunks.append(chunk)
-                    logger.info(f"Created final chunk with {len(current_elements)} elements, size: {len(chunk)}")
                 
                 logger.info(f"Split content into {len(chunks)} chunks by elements")
+                
+                # Verify chunk continuity
+                if len(chunks) > 1:
+                    for i in range(1, len(chunks)):
+                        prev_chunk = BeautifulSoup(chunks[i-1], 'html.parser').get_text()
+                        curr_chunk = BeautifulSoup(chunks[i], 'html.parser').get_text()
+                        
+                        prev_end = prev_chunk[-50:].replace('\n', ' ').strip()
+                        curr_start = curr_chunk[:50].replace('\n', ' ').strip()
+                        
+                        logger.info(f"Continuity check between chunks {i} and {i+1}:")
+                        logger.info(f"  Chunk {i} ends with: ...{prev_end}")
+                        logger.info(f"  Chunk {i+1} starts with: {curr_start}...")
+                
                 return chunks
                 
         except Exception as e:
@@ -1100,14 +1195,25 @@ Carefully analyze each section of the document and apply the most appropriate HT
                     current_chunk = ""
                     current_pages = []
                     
-                    for page in page_divs:
+                    for i, page in enumerate(page_divs):
+                        # Log page content sample for debugging
+                        page_text = re.sub(r'<[^>]+>', '', page[:200]).replace('\n', ' ')
+                        logger.info(f"Page {i+1} content sample: {page_text[:100]}...")
+                        
                         if len(current_chunk) + len(page) > max_size and current_chunk:
                             if has_document_structure:
                                 chunk = f'<div class="document">{current_chunk}</div>'
                             else:
                                 chunk = current_chunk
-                                
+                            
+                            # Log chunk details for debugging
+                            logger.info(f"Created fallback chunk with pages {i-len(current_pages)}-{i-1}")
                             chunks.append(chunk)
+                            
+                            # Log chunk content
+                            chunk_text = re.sub(r'<[^>]+>', '', chunk[:200]).replace('\n', ' ')
+                            logger.info(f"Chunk content sample: {chunk_text[:100]}...")
+                            
                             current_chunk = page
                             current_pages = [page]
                         else:
@@ -1119,8 +1225,14 @@ Carefully analyze each section of the document and apply the most appropriate HT
                             chunk = f'<div class="document">{current_chunk}</div>'
                         else:
                             chunk = current_chunk
-                            
+                        
+                        # Log final chunk details for debugging
+                        logger.info(f"Created fallback final chunk with {len(current_pages)} pages")
                         chunks.append(chunk)
+                        
+                        # Log chunk content
+                        chunk_text = re.sub(r'<[^>]+>', '', chunk[:200]).replace('\n', ' ')
+                        logger.info(f"Final chunk content sample: {chunk_text[:100]}...")
                     
                     if chunks:
                         logger.info(f"Split content into {len(chunks)} chunks using page regex")
@@ -1139,6 +1251,11 @@ Carefully analyze each section of the document and apply the most appropriate HT
                 # Add the closing tag if it exists
                 if i+1 < len(parts):
                     part += parts[i+1]
+                
+                # Log part content sample for debugging
+                part_text = re.sub(r'<[^>]+>', '', part[:200]).replace('\n', ' ')
+                if i < 10 or i > len(parts) - 10:  # Log first 10 and last 10 parts
+                    logger.info(f"Part {i//2+1} content sample: {part_text[:100]}...")
                     
                 if len(current_chunk) + len(part) > max_size and current_chunk:
                     # Make sure we have valid HTML with appropriate structure
@@ -1148,7 +1265,14 @@ Carefully analyze each section of the document and apply the most appropriate HT
                         else:
                             current_chunk = f'<div class="page">{current_chunk}</div>'
                     
+                    # Log chunk details for debugging
+                    logger.info(f"Created fallback chunk at part boundary {i//2}")
                     chunks.append(current_chunk)
+                    
+                    # Log chunk content
+                    chunk_text = re.sub(r'<[^>]+>', '', current_chunk[:200]).replace('\n', ' ')
+                    logger.info(f"Chunk content sample: {chunk_text[:100]}...")
+                    
                     current_chunk = part
                 else:
                     current_chunk += part
@@ -1161,7 +1285,13 @@ Carefully analyze each section of the document and apply the most appropriate HT
                     else:
                         current_chunk = f'<div class="page">{current_chunk}</div>'
                 
+                # Log final chunk details for debugging
+                logger.info(f"Created final fallback chunk")
                 chunks.append(current_chunk)
+                
+                # Log chunk content
+                chunk_text = re.sub(r'<[^>]+>', '', current_chunk[:200]).replace('\n', ' ')
+                logger.info(f"Final fallback chunk content sample: {chunk_text[:100]}...")
             
             # If we still have no chunks, use very simple approach
             if not chunks:
@@ -1175,6 +1305,7 @@ Carefully analyze each section of the document and apply the most appropriate HT
                             chunk = f'<div class="page">{chunk}</div>'
                     
                     chunks.append(chunk)
+                    logger.info(f"Created fixed-size chunk {i//max_size+1}, size: {len(chunk)}")
             
             logger.info(f"Split content into {len(chunks)} chunks using fallback method")
             return chunks
@@ -1183,7 +1314,7 @@ Carefully analyze each section of the document and apply the most appropriate HT
     def combine_html_content(self, html_contents):
         """
         Combine multiple HTML contents into a single document.
-        Language-agnostic implementation for consistent translation results.
+        Enhanced with detailed logging to verify chunk continuity.
         """
         if not html_contents:
             logger.warning("No HTML contents to combine")
@@ -1196,12 +1327,49 @@ Carefully analyze each section of the document and apply the most appropriate HT
         needs_document_wrapper = not ('<div class="document"' in first_chunk or "<div class='document'" in first_chunk)
         needs_page_wrapper = not ('<div class="page"' in first_chunk or "<div class='page'" in first_chunk)
         
+        # Log chunk information for debugging
+        for i, content in enumerate(html_contents):
+            # Extract some text from the beginning and end of each chunk
+            text_content = re.sub(r'<[^>]+>', ' ', content)
+            text_content = re.sub(r'\s+', ' ', text_content).strip()
+            content_start = text_content[:100]
+            content_end = text_content[-100:] if len(text_content) > 100 else text_content
+            
+            logger.info(f"Chunk {i+1} of {len(html_contents)}:")
+            logger.info(f"  Length: {len(content)} chars")
+            logger.info(f"  Starts with: {content_start}...")
+            logger.info(f"  Ends with: ...{content_end}")
+            
+            # Check for document/page structure
+            has_doc = '<div class="document"' in content or "<div class='document'" in content
+            has_page = '<div class="page"' in content or "<div class='page'" in content
+            logger.info(f"  Has document structure: {has_doc}, Has page structure: {has_page}")
+        
+        # Check for continuity between chunks
+        if len(html_contents) > 1:
+            logger.info("Checking continuity between chunks:")
+            for i in range(len(html_contents) - 1):
+                # Extract text from end of current chunk and beginning of next chunk
+                current_chunk_text = re.sub(r'<[^>]+>', ' ', html_contents[i])
+                current_chunk_text = re.sub(r'\s+', ' ', current_chunk_text).strip()
+                current_chunk_end = current_chunk_text[-50:] if len(current_chunk_text) > 50 else current_chunk_text
+                
+                next_chunk_text = re.sub(r'<[^>]+>', ' ', html_contents[i+1])
+                next_chunk_text = re.sub(r'\s+', ' ', next_chunk_text).strip()
+                next_chunk_start = next_chunk_text[:50] if len(next_chunk_text) > 50 else next_chunk_text
+                
+                logger.info(f"  Between chunks {i+1} and {i+2}:")
+                logger.info(f"    Chunk {i+1} ends with: ...{current_chunk_end}")
+                logger.info(f"    Chunk {i+2} starts with: {next_chunk_start}...")
+        
         try:
             # Use BeautifulSoup for robust HTML parsing
             combined_html = ""
             page_contents = []
             
             for i, content in enumerate(html_contents):
+                logger.info(f"Processing chunk {i+1} for combination")
+                
                 # Clean up the content
                 content = re.sub(r'<!DOCTYPE[^>]*>', '', content, flags=re.IGNORECASE)
                 content = re.sub(r'</?html[^>]*>', '', content, flags=re.IGNORECASE)
@@ -1212,30 +1380,79 @@ Carefully analyze each section of the document and apply the most appropriate HT
                 soup = BeautifulSoup(content, 'html.parser')
                 
                 # Extract the relevant content
+                extracted_content = ""
                 if soup.find('div', class_='document'):
+                    logger.info(f"  Chunk {i+1} has document structure")
                     # If this chunk has a document structure, extract the pages
                     pages = soup.find_all('div', class_='page')
                     if pages:
-                        for page in pages:
-                            page_contents.append(str(page))
+                        logger.info(f"  Found {len(pages)} pages in chunk {i+1}")
+                        for j, page in enumerate(pages):
+                            page_html = str(page)
+                            page_contents.append(page_html)
+                            
+                            # Log page content sample
+                            page_text = page.get_text()[:100].replace('\n', ' ')
+                            logger.info(f"  Page {j+1} from chunk {i+1} starts with: {page_text}...")
                     else:
                         # If no pages but has document, extract the document content
+                        logger.info(f"  No pages found in document div of chunk {i+1}, extracting all content")
                         doc_div = soup.find('div', class_='document')
-                        page_contents.append(f'<div class="page">{doc_div.decode_contents()}</div>')
+                        doc_content = str(doc_div.decode_contents())
+                        wrapped_content = f'<div class="page">{doc_content}</div>'
+                        page_contents.append(wrapped_content)
+                        
+                        # Log content sample
+                        content_text = doc_div.get_text()[:100].replace('\n', ' ')
+                        logger.info(f"  Document content starts with: {content_text}...")
                 elif soup.find('div', class_='page'):
+                    logger.info(f"  Chunk {i+1} has page structure without document wrapper")
                     # If this chunk has pages but no document, add the pages
                     pages = soup.find_all('div', class_='page')
-                    for page in pages:
-                        page_contents.append(str(page))
+                    logger.info(f"  Found {len(pages)} pages in chunk {i+1}")
+                    for j, page in enumerate(pages):
+                        page_html = str(page)
+                        page_contents.append(page_html)
+                        
+                        # Log page content sample
+                        page_text = page.get_text()[:100].replace('\n', ' ')
+                        logger.info(f"  Page {j+1} from chunk {i+1} starts with: {page_text}...")
                 else:
+                    logger.info(f"  Chunk {i+1} has no document or page structure, wrapping all content")
                     # No document or page structure, wrap everything in a page
-                    page_contents.append(f'<div class="page">{str(soup)}</div>')
+                    wrapped_content = f'<div class="page">{str(soup)}</div>'
+                    page_contents.append(wrapped_content)
+                    
+                    # Log content sample
+                    content_text = soup.get_text()[:100].replace('\n', ' ')
+                    logger.info(f"  Wrapped content starts with: {content_text}...")
             
             # Now build the combined HTML
+            logger.info(f"Combining {len(page_contents)} total pages into final document")
             if needs_document_wrapper:
                 combined_html = f'<div class="document">\n{"".join(page_contents)}\n</div>'
+                logger.info("Added document wrapper to combined content")
             else:
                 combined_html = "".join(page_contents)
+                logger.info("No document wrapper needed for combined content")
+            
+            # Log the final document structure
+            soup = BeautifulSoup(combined_html, 'html.parser')
+            pages_in_final = soup.find_all('div', class_='page')
+            logger.info(f"Final document has {len(pages_in_final)} pages")
+            
+            # Log the start and end of the combined content
+            final_text = soup.get_text()
+            final_start = final_text[:100].replace('\n', ' ')
+            final_end = final_text[-100:].replace('\n', ' ')
+            logger.info(f"Final document starts with: {final_start}...")
+            logger.info(f"Final document ends with: ...{final_end}")
+            
+            # Check for potential content loss by comparing combined size with sum of chunks
+            total_chunks_size = sum(len(chunk) for chunk in html_contents)
+            logger.info(f"Total size of all chunks: {total_chunks_size}, Combined document size: {len(combined_html)}")
+            if len(combined_html) < total_chunks_size * 0.8:  # If we lost more than 20% of content
+                logger.warning(f"Possible content loss during combination! Combined size is {len(combined_html)/(total_chunks_size)*100:.2f}% of total chunks size")
             
             logger.info(f"Successfully combined chunks into a document of {len(combined_html)} chars")
             return combined_html
@@ -1253,8 +1470,11 @@ Carefully analyze each section of the document and apply the most appropriate HT
             
             if needs_document:
                 combined = '<div class="document">\n'
+                logger.info("Adding document wrapper in fallback method")
             
-            for content in html_contents:
+            for i, content in enumerate(html_contents):
+                logger.info(f"Processing chunk {i+1} in fallback combining")
+                
                 # Clean up the content
                 content = re.sub(r'<!DOCTYPE[^>]*>', '', content, flags=re.IGNORECASE)
                 content = re.sub(r'</?html[^>]*>', '', content, flags=re.IGNORECASE)
@@ -1264,12 +1484,20 @@ Carefully analyze each section of the document and apply the most appropriate HT
                 # Remove document wrapper if present and we're adding our own
                 if needs_document:
                     content = re.sub(r'<div class=["\'](document|chunk)["\'][^>]*>(.*?)</div>', r'\2', content, flags=re.DOTALL|re.IGNORECASE)
+                    logger.info(f"  Removed existing document wrapper from chunk {i+1}")
                 
                 # Add page wrapper if needed
                 if needs_page and not ('<div class="page"' in content or "<div class='page'" in content):
                     content = f'<div class="page">\n{content}\n</div>'
+                    logger.info(f"  Added page wrapper to chunk {i+1}")
                     
                 combined += content + '\n'
+                
+                # Log content sample added to combined result
+                content_text = re.sub(r'<[^>]+>', ' ', content)
+                content_text = re.sub(r'\s+', ' ', content_text).strip()
+                content_sample = content_text[:100]
+                logger.info(f"  Added content starting with: {content_sample}...")
             
             if needs_document:
                 combined += '</div>'
