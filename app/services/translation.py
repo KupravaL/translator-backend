@@ -450,14 +450,14 @@ Carefully analyze each section of the document and apply the most appropriate HT
         return await self._get_formatted_text_from_gemini_buffer(page)
     
     async def translate_chunk(self, html_content: str, from_lang: str, to_lang: str, retries: int = 3, chunk_id: str = None) -> str:
-        """Translate a chunk of HTML content using Google Gemini."""
+        """Translate a chunk of HTML content using Google Gemini with improved complete translation."""
         if not self.translation_model:
             logger.error("Google API key not configured for translation")
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
         if not chunk_id:
             chunk_id = f"{hash(html_content)}"[:7]
-            
+                
         start_time = time.time()
         logger.info(f"Starting translation of chunk {chunk_id} ({len(html_content)} chars) from {from_lang} to {to_lang}")
         
@@ -465,21 +465,24 @@ Carefully analyze each section of the document and apply the most appropriate HT
         
         for attempt in range(1, retries + 1):
             try:
-                # Create a prompt specifically designed for HTML translation
+                # Create a prompt specifically designed for HTML translation with improved instructions
                 prompt = f"""Translate the text content in this HTML from {from_lang} to {to_lang}.
 
-IMPORTANT RULES:
-1. ONLY translate the human-readable text content - DO NOT translate HTML tags, attributes, CSS classes or IDs.
-2. Preserve ALL HTML tags, attributes, CSS classes, and structure exactly as they appear in the input.
-3. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML.
-4. Keep all spacing, indentation, and formatting consistent with the input.
-5. Ensure your output is valid HTML that can be rendered directly in a browser.
-6. Don't translate content within <style> tags.
+    IMPORTANT RULES:
+    1. Translate ALL human-readable text content, including technical terms, titles, labels, and values.
+    2. Preserve ALL HTML tags, attributes, CSS classes, and structure exactly as they appear in the input.
+    3. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML.
+    4. Keep all spacing, indentation, and formatting consistent with the input.
+    5. Ensure your output is valid HTML that can be rendered directly in a browser.
+    6. Don't translate content within <style> tags.
+    7. For tables, translate all cells including headers and technical content.
+    8. Translate form field labels and values completely.
+    9. Keep proper nouns, brand names, and specific product identifiers as they are.
 
-Here is the HTML to translate:
+    Here is the HTML to translate:
 
-{html_content}
-"""
+    {html_content}
+    """
 
                 logger.info(f"Sending chunk {chunk_id} to Gemini for translation (attempt {attempt}/{retries})")
                 translation_start = time.time()
@@ -544,7 +547,7 @@ Here is the HTML to translate:
                 logger.info(f"Successfully translated chunk {chunk_id}, length: {len(translated_text)} chars")
                 logger.info(f"Translation took {time.time() - start_time:.2f} seconds")
                 return translated_text
-                
+                    
             except Exception as e:
                 logger.error(f"Translation error for chunk {chunk_id} (attempt {attempt}/{retries}): {str(e)}")
                 logger.error(f"Error type: {type(e).__name__}")
