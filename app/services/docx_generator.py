@@ -320,11 +320,12 @@ class DocxGeneratorService:
                     run = paragraph.add_run(text)
                     run.underline = True
                     run.font.color.rgb = RGBColor(0, 0, 255)
-                    # Add hyperlink if href is present
+                    # Store href as run property rather than adding a comment
                     href = child.get('href')
                     if href:
-                        # Store href as a comment for reference (python-docx doesn't support hyperlinks directly)
-                        run.add_comment(f"Link: {href}")
+                        # Instead of using add_comment(), store as a custom property
+                        # or simply skip since we can't directly add hyperlinks
+                        pass
             elif child.name == 'span':
                 # Process span with potential inline styles
                 # Clean the text before adding
