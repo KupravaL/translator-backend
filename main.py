@@ -152,12 +152,7 @@ async def add_security_headers(request: Request, call_next):
     
     # Set COOP header to allow popups
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"
-    response.headers["Access-Control-Allow-Origin"] = "http://localhost:5173"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "*"
-
-
+    
     # Set COEP header for added security but allow credentials
     response.headers["Cross-Origin-Embedder-Policy"] = "credentialless"
     
