@@ -449,6 +449,7 @@ Carefully analyze each section of the document and apply the most appropriate HT
         """Legacy method - retained for backward compatibility"""
         return await self._get_formatted_text_from_gemini_buffer(page)
     
+    # Method 1: Translate chunk
     async def translate_chunk(self, html_content: str, from_lang: str, to_lang: str, retries: int = 3, chunk_id: str = None) -> str:
         """
         Translate a chunk of HTML content to the target language.
@@ -464,6 +465,9 @@ Carefully analyze each section of the document and apply the most appropriate HT
                 
         start_time = time.time()
         logger.info(f"Starting translation of chunk {chunk_id} ({len(html_content)} chars) to {to_lang}")
+        
+        # Save original HTML for comparison
+        original_html = html_content
         
         last_error = None
         
@@ -551,6 +555,32 @@ Carefully analyze each section of the document and apply the most appropriate HT
                     logger.error(f"Translation result for chunk {chunk_id} is not valid HTML")
                     logger.error(f"Raw output starts with: {translated_text[:100]}...")
                     raise TranslationError("Translation result is not valid HTML", "CONTENT_ERROR")
+                
+                # Verify that the HTML structure is preserved
+                # If the original had a div.document or div.page, the translated version should too
+                if ('<div class="document"' in original_html or "<div class='document'" in original_html) and \
+                not ('<div class="document"' in translated_text or "<div class='document'" in translated_text):
+                    logger.warning(f"Document structure may be lost in translation, attempting to fix")
+                    try:
+                        # Try to wrap the content in document/page structure if needed
+                        soup = BeautifulSoup(translated_text, 'html.parser')
+                        if not soup.find('div', class_='document'):
+                            # Create new document structure
+                            doc_div = soup.new_tag('div', attrs={'class': 'document'})
+                            page_div = soup.new_tag('div', attrs={'class': 'page'})
+                            
+                            # Move all content into the page div
+                            for child in list(soup.children):
+                                if child.name:  # Skip NavigableString objects
+                                    page_div.append(child.extract())
+                            
+                            # Build the structure
+                            doc_div.append(page_div)
+                            soup.append(doc_div)
+                            translated_text = str(soup)
+                            logger.info(f"Fixed document structure in translated content")
+                    except Exception as struct_error:
+                        logger.warning(f"Couldn't fix document structure: {str(struct_error)}")
                 
                 logger.info(f"Successfully translated chunk {chunk_id}, length: {len(translated_text)} chars")
                 logger.info(f"Translation took {time.time() - start_time:.2f} seconds")
@@ -929,8 +959,8 @@ Carefully analyze each section of the document and apply the most appropriate HT
                 db.rollback()
             return False
 
-    @staticmethod
-    def split_content_into_chunks(content: str, max_size: int) -> List[str]:
+    # Method 2: Split content into chunks
+    def split_content_into_chunks(self, content: str, max_size: int) -> List[str]:
         """
         Split content into chunks of maximum size while preserving HTML structure.
         Language-agnostic implementation for universal translation support.
@@ -944,70 +974,160 @@ Carefully analyze each section of the document and apply the most appropriate HT
         
         try:
             # Use BeautifulSoup to parse the HTML
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(content, 'html.parser')
             
-            # Find all top-level elements (direct children of body or div.document if exists)
-            doc_div = soup.find('div', class_='document')
-            if doc_div:
-                top_elements = list(doc_div.children)
-                logger.info(f"Found document div with {len(top_elements)} direct children")
-            else:
-                # If no document div, get body children or direct children of soup
-                body = soup.body or soup
-                top_elements = list(body.children)
-                logger.info(f"No document div found, using {len(top_elements)} top-level elements")
+            # Check if we have a document/page structure
+            has_document_structure = bool(soup.find('div', class_='document'))
             
-            # Filter to keep only tag elements and non-empty strings
-            filtered_elements = []
-            for element in top_elements:
-                if element.name or (isinstance(element, str) and element.strip()):
-                    filtered_elements.append(element)
+            # Find all elements to split by (either pages or top-level elements)
+            pages = soup.find_all('div', class_='page')
             
-            logger.info(f"Found {len(filtered_elements)} significant elements to distribute into chunks")
-            
-            # Create chunks based on these elements
-            chunks = []
-            current_chunk = ""
-            current_chunk_elements = []
-            
-            for element in filtered_elements:
-                # Convert element to string
-                element_str = str(element)
+            if pages:
+                logger.info(f"Found {len(pages)} page divs to split by")
                 
-                # If adding this element would exceed max size, start a new chunk
-                if len(current_chunk) + len(element_str) > max_size and current_chunk:
-                    # Wrap the elements in a container div for valid HTML
-                    wrapped_chunk = f"<div class='chunk'>{current_chunk}</div>"
-                    chunks.append(wrapped_chunk)
-                    logger.info(f"Created chunk of size {len(wrapped_chunk)} with {len(current_chunk_elements)} elements")
+                # If we have pages, split by page
+                chunks = []
+                current_chunk = ""
+                current_pages = []
+                
+                for page in pages:
+                    page_html = str(page)
                     
-                    # Start a new chunk with this element
-                    current_chunk = element_str
-                    current_chunk_elements = [element]
+                    # If adding this page would exceed max size, start a new chunk
+                    if len(current_chunk) + len(page_html) > max_size and current_chunk:
+                        # Create a proper document structure
+                        if has_document_structure:
+                            chunk = f'<div class="document">{current_chunk}</div>'
+                        else:
+                            chunk = current_chunk
+                            
+                        chunks.append(chunk)
+                        logger.info(f"Created chunk with {len(current_pages)} pages, size: {len(chunk)}")
+                        
+                        # Start a new chunk with this page
+                        current_chunk = page_html
+                        current_pages = [page]
+                    else:
+                        # Add page to current chunk
+                        current_chunk += page_html
+                        current_pages.append(page)
+                
+                # Add the last chunk if it has content
+                if current_chunk:
+                    if has_document_structure:
+                        chunk = f'<div class="document">{current_chunk}</div>'
+                    else:
+                        chunk = current_chunk
+                        
+                    chunks.append(chunk)
+                    logger.info(f"Created final chunk with {len(current_pages)} pages, size: {len(chunk)}")
+                
+                logger.info(f"Split content into {len(chunks)} chunks by pages")
+                return chunks
+                
+            else:
+                # If no pages, get direct children of document div or body
+                doc_div = soup.find('div', class_='document')
+                if doc_div:
+                    elements = list(doc_div.children)
+                    logger.info(f"Found document div with {len(elements)} direct children")
                 else:
-                    # Add element to current chunk
-                    current_chunk += element_str
-                    current_chunk_elements.append(element)
-            
-            # Add the last chunk if it has content
-            if current_chunk:
-                wrapped_chunk = f"<div class='chunk'>{current_chunk}</div>"
-                chunks.append(wrapped_chunk)
-                logger.info(f"Created final chunk of size {len(wrapped_chunk)} with {len(current_chunk_elements)} elements")
-            
-            # Log splitting results
-            logger.info(f"Split content into {len(chunks)} chunks")
-            for i, chunk in enumerate(chunks):
-                logger.info(f"Chunk {i+1}: {len(chunk)} chars")
-            
-            return chunks
-            
+                    body = soup.body or soup
+                    elements = list(body.children)
+                    logger.info(f"No document structure found, using {len(elements)} body/root children")
+                
+                # Filter to keep only tag elements and non-empty strings
+                elements = [el for el in elements if el.name or (isinstance(el, str) and el.strip())]
+                logger.info(f"Found {len(elements)} significant elements to distribute into chunks")
+                
+                # Create chunks based on these elements
+                chunks = []
+                current_chunk = ""
+                current_elements = []
+                
+                for element in elements:
+                    # Convert element to string
+                    element_str = str(element)
+                    
+                    # If adding this element would exceed max size, start a new chunk
+                    if len(current_chunk) + len(element_str) > max_size and current_chunk:
+                        # Wrap in appropriate structure
+                        if has_document_structure:
+                            chunk = f'<div class="document"><div class="page">{current_chunk}</div></div>'
+                        else:
+                            chunk = f'<div class="page">{current_chunk}</div>'
+                            
+                        chunks.append(chunk)
+                        logger.info(f"Created chunk with {len(current_elements)} elements, size: {len(chunk)}")
+                        
+                        # Start a new chunk with this element
+                        current_chunk = element_str
+                        current_elements = [element]
+                    else:
+                        # Add element to current chunk
+                        current_chunk += element_str
+                        current_elements.append(element)
+                
+                # Add the last chunk if it has content
+                if current_chunk:
+                    if has_document_structure:
+                        chunk = f'<div class="document"><div class="page">{current_chunk}</div></div>'
+                    else:
+                        chunk = f'<div class="page">{current_chunk}</div>'
+                        
+                    chunks.append(chunk)
+                    logger.info(f"Created final chunk with {len(current_elements)} elements, size: {len(chunk)}")
+                
+                logger.info(f"Split content into {len(chunks)} chunks by elements")
+                return chunks
+                
         except Exception as e:
             # Fall back to simpler splitting approach if BeautifulSoup fails
             logger.warning(f"Error using structural splitting, falling back to basic approach: {str(e)}")
             
-            # Basic backup approach - split by a reasonable separator
+            # Check if we have a document structure
+            has_document_structure = '<div class="document"' in content or "<div class='document'" in content
+            
+            # Basic approach - try to preserve page structure
+            has_pages = '<div class="page"' in content or "<div class='page'" in content
+            
+            if has_pages:
+                # Try to split by page divs
+                page_divs = re.findall(r'(<div class=["\']page["\'][^>]*>.*?</div>)', content, re.DOTALL)
+                
+                if page_divs:
+                    chunks = []
+                    current_chunk = ""
+                    current_pages = []
+                    
+                    for page in page_divs:
+                        if len(current_chunk) + len(page) > max_size and current_chunk:
+                            if has_document_structure:
+                                chunk = f'<div class="document">{current_chunk}</div>'
+                            else:
+                                chunk = current_chunk
+                                
+                            chunks.append(chunk)
+                            current_chunk = page
+                            current_pages = [page]
+                        else:
+                            current_chunk += page
+                            current_pages.append(page)
+                    
+                    if current_chunk:
+                        if has_document_structure:
+                            chunk = f'<div class="document">{current_chunk}</div>'
+                        else:
+                            chunk = current_chunk
+                            
+                        chunks.append(chunk)
+                    
+                    if chunks:
+                        logger.info(f"Split content into {len(chunks)} chunks using page regex")
+                        return chunks
+            
+            # If we can't split by pages, try paragraphs or divs
+            logger.warning("Couldn't split by pages, trying paragraph/div boundaries")
             chunks = []
             current_chunk = ""
             
@@ -1021,9 +1141,13 @@ Carefully analyze each section of the document and apply the most appropriate HT
                     part += parts[i+1]
                     
                 if len(current_chunk) + len(part) > max_size and current_chunk:
-                    # Make sure we have valid HTML by wrapping in a div
-                    if not current_chunk.startswith('<'):
-                        current_chunk = f"<div>{current_chunk}</div>"
+                    # Make sure we have valid HTML with appropriate structure
+                    if not current_chunk.startswith('<div'):
+                        if has_document_structure:
+                            current_chunk = f'<div class="document"><div class="page">{current_chunk}</div></div>'
+                        else:
+                            current_chunk = f'<div class="page">{current_chunk}</div>'
+                    
                     chunks.append(current_chunk)
                     current_chunk = part
                 else:
@@ -1031,25 +1155,32 @@ Carefully analyze each section of the document and apply the most appropriate HT
             
             # Add the last chunk if it has content
             if current_chunk:
-                if not current_chunk.startswith('<'):
-                    current_chunk = f"<div>{current_chunk}</div>"
+                if not current_chunk.startswith('<div'):
+                    if has_document_structure:
+                        current_chunk = f'<div class="document"><div class="page">{current_chunk}</div></div>'
+                    else:
+                        current_chunk = f'<div class="page">{current_chunk}</div>'
+                
                 chunks.append(current_chunk)
             
-            # If we still have no chunks, split the content in fixed sizes
+            # If we still have no chunks, use very simple approach
             if not chunks:
                 logger.warning("Fallback to fixed-size chunk splitting")
                 for i in range(0, len(content), max_size):
                     chunk = content[i:i+max_size]
-                    if not chunk.startswith('<'):
-                        chunk = f"<div>{chunk}</div>"
+                    if not chunk.startswith('<div'):
+                        if has_document_structure:
+                            chunk = f'<div class="document"><div class="page">{chunk}</div></div>'
+                        else:
+                            chunk = f'<div class="page">{chunk}</div>'
+                    
                     chunks.append(chunk)
             
             logger.info(f"Split content into {len(chunks)} chunks using fallback method")
             return chunks
 
-    # 3. Universal combine_html_content method
-    @staticmethod
-    def combine_html_content(html_contents):
+    # Method 3: Combine HTML content
+    def combine_html_content(self, html_contents):
         """
         Combine multiple HTML contents into a single document.
         Language-agnostic implementation for consistent translation results.
@@ -1060,67 +1191,69 @@ Carefully analyze each section of the document and apply the most appropriate HT
             
         logger.info(f"Combining {len(html_contents)} HTML content pieces into a single document")
         
+        # First, check if we need document/page structure
+        first_chunk = html_contents[0] if html_contents else ""
+        needs_document_wrapper = not ('<div class="document"' in first_chunk or "<div class='document'" in first_chunk)
+        needs_page_wrapper = not ('<div class="page"' in first_chunk or "<div class='page'" in first_chunk)
+        
         try:
-            # Use BeautifulSoup to create a more robust combination
-            from bs4 import BeautifulSoup
-            
-            # Create a container document
-            combined_doc = BeautifulSoup("<div class='document'></div>", 'html.parser')
-            document_div = combined_doc.find('div', class_='document')
+            # Use BeautifulSoup for robust HTML parsing
+            combined_html = ""
+            page_contents = []
             
             for i, content in enumerate(html_contents):
-                # Clean up the content by removing DOCTYPE, html, head, body tags
+                # Clean up the content
                 content = re.sub(r'<!DOCTYPE[^>]*>', '', content, flags=re.IGNORECASE)
                 content = re.sub(r'</?html[^>]*>', '', content, flags=re.IGNORECASE)
                 content = re.sub(r'</?head[^>]*>', '', content, flags=re.IGNORECASE)
                 content = re.sub(r'</?body[^>]*>', '', content, flags=re.IGNORECASE)
                 
-                # Parse the content
-                chunk_soup = BeautifulSoup(content, 'html.parser')
+                # Parse with BeautifulSoup
+                soup = BeautifulSoup(content, 'html.parser')
                 
-                # If this chunk has a div.chunk or div.page container, use its contents
-                chunk_container = chunk_soup.find('div', class_='chunk') or chunk_soup.find('div', class_='page')
-                
-                if chunk_container:
-                    # Create a new page div and add all children of the chunk container
-                    page_div = combined_doc.new_tag('div', attrs={'class': 'page'})
-                    for child in chunk_container.children:
-                        page_div.append(child.extract())
-                    document_div.append(page_div)
-                    logger.info(f"Added chunk {i+1} as a page div with container")
-                else:
-                    # Create a new page div and add all top-level elements
-                    page_div = combined_doc.new_tag('div', attrs={'class': 'page'})
-                    
-                    # If the chunk has a single top-level div, use its contents
-                    top_div = None
-                    if len(chunk_soup.contents) == 1 and chunk_soup.contents[0].name == 'div':
-                        top_div = chunk_soup.contents[0]
-                    
-                    if top_div:
-                        for child in top_div.children:
-                            page_div.append(child.extract())
+                # Extract the relevant content
+                if soup.find('div', class_='document'):
+                    # If this chunk has a document structure, extract the pages
+                    pages = soup.find_all('div', class_='page')
+                    if pages:
+                        for page in pages:
+                            page_contents.append(str(page))
                     else:
-                        # Otherwise add all top-level elements
-                        for child in chunk_soup.contents:
-                            page_div.append(child.extract())
-                    
-                    document_div.append(page_div)
-                    logger.info(f"Added chunk {i+1} as a page div with direct contents")
+                        # If no pages but has document, extract the document content
+                        doc_div = soup.find('div', class_='document')
+                        page_contents.append(f'<div class="page">{doc_div.decode_contents()}</div>')
+                elif soup.find('div', class_='page'):
+                    # If this chunk has pages but no document, add the pages
+                    pages = soup.find_all('div', class_='page')
+                    for page in pages:
+                        page_contents.append(str(page))
+                else:
+                    # No document or page structure, wrap everything in a page
+                    page_contents.append(f'<div class="page">{str(soup)}</div>')
             
-            # Get the combined HTML and log the result
-            combined_html = str(combined_doc)
-            logger.info(f"Successfully combined all chunks into a document of {len(combined_html)} chars")
+            # Now build the combined HTML
+            if needs_document_wrapper:
+                combined_html = f'<div class="document">\n{"".join(page_contents)}\n</div>'
+            else:
+                combined_html = "".join(page_contents)
             
+            logger.info(f"Successfully combined chunks into a document of {len(combined_html)} chars")
             return combined_html
             
         except Exception as e:
             logger.error(f"Error combining HTML with BeautifulSoup: {str(e)}")
-            
-            # Fallback to the basic approach if BeautifulSoup fails
             logger.info("Falling back to basic HTML combining approach")
             
-            combined = "<div class='document'>\n"
+            # Simple concatenation approach as fallback
+            combined = ""
+            
+            # Determine if we need wrappers
+            needs_document = not any('<div class="document"' in chunk or "<div class='document'" in chunk for chunk in html_contents)
+            needs_page = not any('<div class="page"' in chunk or "<div class='page'" in chunk for chunk in html_contents)
+            
+            if needs_document:
+                combined = '<div class="document">\n'
+            
             for content in html_contents:
                 # Clean up the content
                 content = re.sub(r'<!DOCTYPE[^>]*>', '', content, flags=re.IGNORECASE)
@@ -1128,14 +1261,20 @@ Carefully analyze each section of the document and apply the most appropriate HT
                 content = re.sub(r'</?head[^>]*>', '', content, flags=re.IGNORECASE)
                 content = re.sub(r'</?body[^>]*>', '', content, flags=re.IGNORECASE)
                 
-                # Wrap content in a page div if it's not already
-                if '<div class="page"' not in content and '<div class=\'page\'' not in content:
-                    combined += f"<div class='page'>\n{content}\n</div>\n"
-                else:
-                    combined += f"{content}\n"
+                # Remove document wrapper if present and we're adding our own
+                if needs_document:
+                    content = re.sub(r'<div class=["\'](document|chunk)["\'][^>]*>(.*?)</div>', r'\2', content, flags=re.DOTALL|re.IGNORECASE)
+                
+                # Add page wrapper if needed
+                if needs_page and not ('<div class="page"' in content or "<div class='page'" in content):
+                    content = f'<div class="page">\n{content}\n</div>'
+                    
+                combined += content + '\n'
             
-            combined += "</div>"
-            logger.info(f"Combined {len(html_contents)} content pieces into a document of {len(combined)} chars using basic approach")
+            if needs_document:
+                combined += '</div>'
+                
+            logger.info(f"Combined chunks into document of {len(combined)} chars using basic approach")
             return combined
 
 # Create a singleton instance
