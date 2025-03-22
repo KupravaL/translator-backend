@@ -8,7 +8,7 @@ from docx.shared import Pt, Inches, RGBColor, Cm, Twips
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_BREAK
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement, parse_xml
 from docx.table import _Cell, Table
 import math
 
@@ -338,7 +338,11 @@ class DocxGeneratorService:
             
             # Apply paragraph class-based styling
             if element.get('class'):
-                if 'text-content' in element.get('class'):
+                classes = element.get('class')
+                if isinstance(classes, str):
+                    classes = [classes]
+                
+                if 'text-content' in classes:
                     para.style = 'ArticleText'
                     
             # Set RTL style if needed
@@ -742,7 +746,7 @@ class DocxGeneratorService:
     def _process_table(self, doc, table_elem, css_content=None, is_rtl=False):
         """
         Process HTML tables with comprehensive structure and formatting preservation.
-        Improved to handle complex tables with merged cells and proper styling.
+        Fixed to avoid using get_or_add_tblPr directly.
         """
         # Extract header and body rows
         thead = table_elem.find('thead')
@@ -798,7 +802,7 @@ class DocxGeneratorService:
         if isinstance(table_class, str):
             table_class = [table_class]
         
-        # Apply table width if specified
+        # Apply table width if specified - Fixed approach
         width_match = re.search(r'width\s*:\s*(\d+)([%a-z]+)', table_style)
         if width_match:
             width_val = float(width_match.group(1))
@@ -807,28 +811,64 @@ class DocxGeneratorService:
             if width_unit == '%':
                 # Apply percentage of page width
                 width_pct = min(100, width_val) / 100
-                tbl_element = table._tbl
-                tbl_width = OxmlElement('w:tblW')
-                tbl_width.set(qn('w:w'), str(int(5000 * width_pct)))  # 5000 = 100%
-                tbl_width.set(qn('w:type'), 'pct')
-                tbl_pr = tbl_element.get_or_add_tblPr()
-                tbl_pr.append(tbl_width)
+                
+                # Use proper XML approach to set table width
+                tbl = table._tbl
+                # Check if tblPr exists, create if not
+                tblPr = None
+                for child in tbl:
+                    if child.tag.endswith('tblPr'):
+                        tblPr = child
+                        break
+                
+                if tblPr is None:
+                    tblPr = OxmlElement('w:tblPr')
+                    tbl.insert(0, tblPr)
+                
+                # Create or find tblW element
+                tblW = None
+                for child in tblPr:
+                    if child.tag.endswith('tblW'):
+                        tblW = child
+                        break
+                
+                if tblW is None:
+                    tblW = OxmlElement('w:tblW')
+                    tblPr.append(tblW)
+                
+                # Set width attributes
+                tblW.set(qn('w:w'), str(int(5000 * width_pct)))  # 5000 = 100%
+                tblW.set(qn('w:type'), 'pct')
         
-        # Apply table alignment
-        if 'margin-left:auto' in table_style and 'margin-right:auto' in table_style:
+        # Apply table alignment - Fixed approach
+        if ('margin-left:auto' in table_style and 'margin-right:auto' in table_style) or 'data-table' in table_class:
             # Center alignment
-            tbl_element = table._tbl
-            jc = OxmlElement('w:jc')
+            tbl = table._tbl
+            
+            # Check if tblPr exists, create if not
+            tblPr = None
+            for child in tbl:
+                if child.tag.endswith('tblPr'):
+                    tblPr = child
+                    break
+            
+            if tblPr is None:
+                tblPr = OxmlElement('w:tblPr')
+                tbl.insert(0, tblPr)
+            
+            # Create or find jc element
+            jc = None
+            for child in tblPr:
+                if child.tag.endswith('jc'):
+                    jc = child
+                    break
+            
+            if jc is None:
+                jc = OxmlElement('w:jc')
+                tblPr.append(jc)
+            
+            # Set alignment value
             jc.set(qn('w:val'), 'center')
-            tbl_pr = tbl_element.get_or_add_tblPr()
-            tbl_pr.append(jc)
-        elif 'data-table' in table_class:
-            # Common class for centered tables
-            tbl_element = table._tbl
-            jc = OxmlElement('w:jc')
-            jc.set(qn('w:val'), 'center')
-            tbl_pr = tbl_element.get_or_add_tblPr()
-            tbl_pr.append(jc)
         
         # Process each row
         for row_idx, row in enumerate(rows):
@@ -865,8 +905,9 @@ class DocxGeneratorService:
                     
                     # Clear existing content in the cell
                     for paragraph in table_cell.paragraphs:
-                        for run in paragraph.runs:
-                            run._element.getparent().remove(run._element)
+                        if paragraph.runs:
+                            for run in paragraph.runs:
+                                run._element.getparent().remove(run._element)
                     
                     # Process cell style attributes
                     cell_style = cell.get('style', '')
@@ -1003,7 +1044,10 @@ class DocxGeneratorService:
                         for i in range(1, rowspan):
                             if row_idx + i < len(rows):
                                 try:
-                                    table_cell.merge(table.cell(row_idx + i, current_col))
+                                    target_cell = table.cell(row_idx + i, current_col)
+                                    # Only merge if not already part of another merged cell
+                                    if cell_map[row_idx + i][current_col] == "MERGED":
+                                        table_cell.merge(target_cell)
                                 except Exception as e:
                                     logger.warning(f"Failed to merge cells vertically: {str(e)}")
                     
@@ -1018,16 +1062,15 @@ class DocxGeneratorService:
 
     def _set_cell_shading(self, cell, color_hex):
         """Set the background shading of a table cell."""
-        cell_properties = cell._element.tcPr
-        if cell_properties is None:
-            cell_properties = OxmlElement('w:tcPr')
-            cell._element.append(cell_properties)
-        
-        shading = OxmlElement('w:shd')
-        shading.set(qn('w:fill'), color_hex)
-        shading.set(qn('w:val'), 'clear')  # 'clear' for normal shading
-        shading.set(qn('w:color'), 'auto')
-        cell_properties.append(shading)
+        try:
+            tcPr = cell._tc.get_or_add_tcPr()
+            shading = OxmlElement('w:shd')
+            shading.set(qn('w:fill'), color_hex)
+            shading.set(qn('w:val'), 'clear')
+            shading.set(qn('w:color'), 'auto')
+            tcPr.append(shading)
+        except Exception as e:
+            logger.warning(f"Failed to set cell shading: {str(e)}")
 
     def _process_list(self, doc, list_elem, is_rtl=False):
         """
