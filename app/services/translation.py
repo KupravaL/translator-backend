@@ -88,43 +88,62 @@ class TranslationService:
             
             logger.info(f"Image saved to temporary file: {img_path}")
             
-            prompt = """Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
+            prompt = """Analyze this document and extract its content with precise structural preservation, formatting it in HTML:
 
 1. Content Organization:
    - Maintain the original hierarchical structure (headers, sections, subsections)
-   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
-   - IMPORTANT: Do not generate HTML FOR IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
+   - IMPORTANT: For unstructured or messy documents, impose logical structure at your discretion to improve readability
+   - IMPORTANT: Process text and formatting only. Skip all images and DO NOT generate any <img> tags
    - Preserve paragraph boundaries and logical content grouping
    - Keep related data points together on the same line when they form a logical unit
    - Maintain chronological or numerical sequence where present
-   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. 
+   - Preserve document metadata (title, author, date) when present, using appropriate HTML elements
 
 2. Formatting Guidelines:
-   - Clearly distinguish headers and section titles from body content
-   - Preserve tabular data relationships without splitting related columns
+   - Clearly distinguish headers and section titles from body content using appropriate HTML heading tags
+   - Preserve mixed text formatting (bold, italic, underline, etc.) using appropriate HTML tags
    - Maintain proper indentation to show hierarchical relationships
    - Keep contextually related numbers, measurements, or values together with their labels
+   - Preserve original text orientation when possible (vertical text, rotated elements)
 
-3. Special Handling:
-   - For lists of measurements/values, keep all parameters and their values together
-   - For date-based content, ensure dates are formatted consistently as section headers
-   - For forms or structured data, preserve the relationship between fields and values
-   - For technical/scientific data, maintain the relationship between identifiers and their measurements
+3. Tables and Structured Data:
+   - Preserve exact table structure including merged cells and complex headers
+   - Handle nested tables appropriately, maintaining their hierarchical relationships
+   - For multi-column layouts, preserve column relationships without merging unrelated content
+   - Ensure tables are accessible with appropriate header cells and structure
 
-4. Layout Preservation:
-   - Identify when content is presented in columns and preserve column relationships
-   - Avoid arbitrary line breaks that split conceptually unified information
-   - Maintain spacing that indicates logical grouping in the original
-   - Preserve the flow of information in a way that maintains readability
+4. Special Content Handling:
+   - Preserve mathematical formulas and equations using MathML or appropriate HTML/CSS when possible
+   - Format code blocks with appropriate syntax highlighting tags or preformatted text blocks
+   - Maintain footnotes, endnotes, and references with appropriate linking when possible
+   - Preserve special characters, symbols, and emoji with proper encoding
+   - Handle non-English content with appropriate language attributes and character encoding
 
-5. HTML Considerations:
-   - Do not introduce HTML tags into plain text extraction unless specifically requested
-   - If HTML formatting is present in the original, preserve semantic structure but not decorative elements
-   - Properly handle tables by maintaining row and column relationships
-   - If converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
-   - Ensure any HTML output is valid and properly nested
+5. Document Flow and Navigation:
+   - Distinguish between headers/footers and main content
+   - Handle page numbers appropriately (either preserve or omit consistently)
+   - Distinguish between column breaks and section breaks
+   - Preserve hyperlinks with their correct destinations
 
-Extract the content with minimal unnecessary line breaks, using them only to separate distinct items or sections. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
+6. Accessibility Considerations:
+   - Use semantic HTML elements that convey the correct structure
+   - Add appropriate ARIA attributes when necessary for complex elements
+   - Ensure proper heading hierarchy (h1, h2, h3, etc.) that reflects the document structure
+   - Provide text alternatives for non-image elements like charts or diagrams
+
+7. Edge Cases:
+   - Handle watermarks or background elements appropriately (usually omit unless content-critical)
+   - For forms, preserve the relationship between labels and input fields
+   - For technical/scientific data, maintain precise formatting of measurements and units
+   - Handle bulleted and numbered lists with appropriate HTML list elements
+
+8. HTML Output Quality:
+   - Ensure valid, well-formed HTML with proper nesting
+   - Use semantic tags to represent document structure (<h1>, <p>, <ul>, <table>, etc.)
+   - Include appropriate CSS classes for structural elements when helpful
+   - Avoid unnecessary line breaks, using them only to separate distinct items or sections
+
+Extract the content with minimal unnecessary formatting, focusing on preserving the document's organizational structure, information hierarchy, and semantic relationships. The result should be clean, accessible HTML that accurately represents the original document."""
 
             # Read image data directly from the file
             with open(img_path, 'rb') as f:
