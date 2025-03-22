@@ -493,26 +493,66 @@ Carefully analyze each section of the document and apply the most appropriate HT
         for attempt in range(1, retries + 1):
             try:
                 # Create a prompt specifically designed for HTML translation with language-agnostic instructions
-                prompt = f"""Translate all text content in this HTML to {to_lang}.
+                prompt = f"""Translate all text content in this HTML to ${to_lang}.
 
-    IMPORTANT RULES:
-    1. Translate ALL text content to {to_lang} regardless of what language it's in
-    2. Preserve ALL HTML tags, attributes, CSS classes, and structure exactly as they appear in the input
-    3. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML
-    4. Keep all spacing, indentation, and formatting consistent with the input
-    5. Ensure your output is valid HTML that can be rendered directly in a browser
-    6. Don't translate content within <style> tags
-    7. Don't translate these specific items:
-    - Technical codes and identifiers (like product IDs, registration numbers)
-    - Email addresses and URLs
-    - Physical addresses 
-    - Brand and company names
-    - Technical standards (like EN 14411:2016)
-    - Unit measurements and technical values (like NPD, N/mm2)
+IMPORTANT TRANSLATION RULES:
+1. Language Handling:
+   - Translate ALL text content to ${to_lang} regardless of its original language
+   - Maintain the proper rhythm, flow, and natural expression of ${to_lang}
+   - Adapt idioms and cultural references appropriately for ${to_lang} speakers
+   - Preserve formal/informal tone and register when translating
 
-    Here is the HTML to translate:
+2. Structure Preservation:
+   - Keep ALL HTML tags, attributes, classes exactly as they appear in the input
+   - Preserve ALL whitespace, indentation, and formatting
+   - Maintain the exact document structure, including all div, section, and table layouts
+   - Keep all CSS style information intact without translation
 
-    {html_content}
+3. Technical Content:
+   - DO NOT translate or modify:
+     * Technical codes, product IDs, and identifiers
+     * Email addresses, URLs, file paths, and domain names
+     * Physical addresses as written in the original
+     * Brand names, company names, product names, and trademarks
+     * Technical standards (like ISO 9001, EN 14411:2016)
+     * Unit measurements and technical values (like 45mm, 100psi, 230V)
+     * Variable names, function names, and code snippets
+     * Dates and time formats (but do localize the month names if written out)
+
+4. Document Element Translation:
+   - Translate document headings while preserving their hierarchical structure
+   - For tables: translate headers and content without changing table structure or column order
+   - For lists: translate list items while keeping the original numbering/bullet structure
+   - For forms: translate labels and instructions but keep field identifiers untouched
+
+5. Special Text:
+   - Text in <code>, <pre>, or code blocks: do not translate
+   - Text in buttons, navigation, and UI elements: translate to maintain usability
+   - Alternative text for images (alt attributes): translate for accessibility
+   - Translate text within <title> and meta description tags if present
+
+6. Attribute Content:
+   - Translate user-facing attributes like title, aria-label, placeholder, and alt text
+   - DO NOT translate technical attributes like class, id, name, data-* attributes
+   - For aria-* attributes related to accessibility: translate only the human-readable parts
+
+7. Cultural Sensitivity:
+   - Adapt units of measurement only if needed (metric/imperial conversions)
+   - Adapt date formats to match target language conventions
+   - Adapt honorifics and titles to appropriate equivalents in target language
+   - Preserve legal and regulatory information with proper localization
+
+8. Output Quality:
+   - Return only the translated HTML without commentary or explanations
+   - Do not add any notes, markers, or translator comments to the output
+   - Ensure your output is valid, well-formed HTML that can be rendered directly
+   - Keep placeholder variables intact (things that look like {{variable}})
+
+This is a document translation task. The translated content must be immediately usable without any post-processing. Handle complex content like tables, forms, and technical documentation with care to ensure both the meaning and functionality are preserved.
+
+Here is the HTML to translate:
+
+${html_content}
     """
 
                 logger.info(f"Sending chunk {chunk_id} to Gemini for translation (attempt {attempt}/{retries})")
