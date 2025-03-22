@@ -249,7 +249,7 @@ class DocxGeneratorService:
         
         # Simple regex-based CSS parsing
         for class_name in element_classes:
-            class_pattern = r'\.{}[^{{]*{{([^}}]*)'}
+            class_pattern = r'\.{}[^{{]*{{([^}}]*)'
             class_matches = re.findall(class_pattern.format(class_name), css_content)
             
             for match in class_matches:
@@ -262,7 +262,7 @@ class DocxGeneratorService:
         
         # Look for ID-specific styles
         if element_id:
-            id_pattern = r'#{}[^{{]*{{([^}}]*)'}
+            id_pattern = r'#{}[^{{]*{{([^}}]*)'
             id_matches = re.findall(id_pattern.format(element_id), css_content)
             
             for match in id_matches:
