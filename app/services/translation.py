@@ -495,60 +495,56 @@ Carefully analyze each section of the document and apply the most appropriate HT
                 # Create a prompt specifically designed for HTML translation with language-agnostic instructions
                 prompt = f"""Translate all text content in this HTML to ${to_lang}.
 
-IMPORTANT TRANSLATION RULES:
-1. Language Handling:
-   - Translate ALL text content to ${to_lang} regardless of its original language
-   - Maintain the proper rhythm, flow, and natural expression of ${to_lang}
-   - Adapt idioms and cultural references appropriately for ${to_lang} speakers
-   - Preserve formal/informal tone and register when translating
+CRUCIAL TRANSLATION REQUIREMENTS:
+1. Document Structure and Hierarchy (HIGHEST PRIORITY):
+   - Maintain the EXACT hierarchical structure of the document including:
+     * ALL <article>, <section>, and heading (<h1>-<h6>) elements in their original order and nesting
+     * ALL page divisions and section breaks
+     * ALL table structures with their rows and columns preserved exactly
+   - Never rearrange sections, articles, tables, or list items from their original order
+   - Preserve the parent-child relationships of all elements
 
-2. Structure Preservation:
-   - Keep ALL HTML tags, attributes, classes exactly as they appear in the input
-   - Preserve ALL whitespace, indentation, and formatting
-   - Maintain the exact document structure, including all div, section, and table layouts
-   - Keep all CSS style information intact without translation
+2. HTML Integrity (HIGHEST PRIORITY):
+   - Keep ALL HTML tags completely unchanged (<div>, <p>, <table>, etc.)
+   - Preserve ALL attributes, classes, IDs, and inline styles exactly as they appear
+   - Keep ALL formatting tags (<b>, <i>, <strong>, etc.) in their original positions 
+   - Maintain exact CSS style information without alteration
+   - Keep whitespace and indentation consistent with the original
 
-3. Technical Content:
-   - DO NOT translate or modify:
-     * Technical codes, product IDs, and identifiers
-     * Email addresses, URLs, file paths, and domain names
-     * Physical addresses as written in the original
-     * Brand names, company names, product names, and trademarks
-     * Technical standards (like ISO 9001, EN 14411:2016)
-     * Unit measurements and technical values (like 45mm, 100psi, 230V)
-     * Variable names, function names, and code snippets
-     * Dates and time formats (but do localize the month names if written out)
+3. Translation Quality Requirements:
+   - Translate ALL text content to ${to_lang} with natural, fluent expressions
+   - Maintain consistent terminology throughout the document
+   - Preserve formal tone in legal/official documents
+   - Adapt idioms appropriately for ${to_lang} speakers
+   - For legal texts: preserve precise legal meaning without omissions or additions
 
-4. Document Element Translation:
-   - Translate document headings while preserving their hierarchical structure
-   - For tables: translate headers and content without changing table structure or column order
-   - For lists: translate list items while keeping the original numbering/bullet structure
-   - For forms: translate labels and instructions but keep field identifiers untouched
+4. Line Breaks and Special Formatting:
+   - Preserve ALL <br/> tags exactly where they appear - these are intentional line breaks
+   - When you see text with line breaks inside table cells, maintain those breaks precisely
+   - DO NOT replace <br/> tags with other characters or formatting
+   - For content with multiple lines separated by <br/> tags, translate each line individually
 
-5. Special Text:
-   - Text in <code>, <pre>, or code blocks: do not translate
-   - Text in buttons, navigation, and UI elements: translate to maintain usability
-   - Alternative text for images (alt attributes): translate for accessibility
-   - Translate text within <title> and meta description tags if present
+5. Tables and Structured Data:
+   - Translate table headers and content while preserving original table structure
+   - Maintain the relative positions of data within table cells
+   - Preserve all line breaks (<br/>) inside table cells in their exact locations
+   - Keep numeric data and formatting in tables consistent with the original
 
-6. Attribute Content:
-   - Translate user-facing attributes like title, aria-label, placeholder, and alt text
-   - DO NOT translate technical attributes like class, id, name, data-* attributes
-   - For aria-* attributes related to accessibility: translate only the human-readable parts
+6. Do Not Translate:
+   - Technical codes and identifiers (product IDs, registration numbers)
+   - Email addresses, URLs, and domain names
+   - Brand names, company names, and product names
+   - Technical standards (like ISO 9001 or EN 14411:2016)
+   - Numeric values, measurement units, and technical specifications
+   - CSS styles, HTML tags, and attributes
 
-7. Cultural Sensitivity:
-   - Adapt units of measurement only if needed (metric/imperial conversions)
-   - Adapt date formats to match target language conventions
-   - Adapt honorifics and titles to appropriate equivalents in target language
-   - Preserve legal and regulatory information with proper localization
+7. Decimal and Number Formatting:
+   - Preserve original number formats (use commas or periods for decimals as in the original)
+   - Keep digit grouping consistent with source (e.g., 1,000.00 or 1.000,00)
+   - Maintain original formatting of currency values
+   - Do not convert units of measure unless explicitly requested
 
-8. Output Quality:
-   - Return only the translated HTML without commentary or explanations
-   - Do not add any notes, markers, or translator comments to the output
-   - Ensure your output is valid, well-formed HTML that can be rendered directly
-   - Keep placeholder variables intact (things that look like {{variable}})
-
-This is a document translation task. The translated content must be immediately usable without any post-processing. Handle complex content like tables, forms, and technical documentation with care to ensure both the meaning and functionality are preserved.
+This document will be processed by automated systems after translation. The EXACT preservation of document structure, particularly articles, sections, and their hierarchical relationships is CRUCIAL. Ensure that all elements remain in their original order and maintain their correct nesting.
 
 Here is the HTML to translate:
 
