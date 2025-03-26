@@ -44,26 +44,10 @@ class TranslationService:
             self.translation_model = None
             logger.warning("Google API key not configured - extraction and translation functionality will be unavailable")
         
-        # Language-specific configuration
+        # Language-specific configuration - uniform approach for all languages
         self.language_config = {
-            # Default settings
+            # Default settings for all languages
             "default": {
-                "temperature": 0.1,
-                "top_p": 0.95,
-                "top_k": 40,
-                "max_chunk_size": 10000,
-                "max_output_tokens": 8192
-            },
-            # Georgian-specific settings
-            "ka": {
-                "temperature": 0.2,  # Slightly higher temperature for Georgian
-                "top_p": 0.98,
-                "top_k": 50,
-                "max_chunk_size": 8000,  # Smaller chunks for Georgian due to character complexity
-                "max_output_tokens": 8192
-            },
-            # Russian-specific settings
-            "ru": {
                 "temperature": 0.15,
                 "top_p": 0.97,
                 "top_k": 45,
@@ -72,13 +56,71 @@ class TranslationService:
             }
         }
         
-        # Placeholder detection - what to look for in translation results to identify failed translations
+        # Placeholder detection patterns
         self.placeholder_patterns = [
             r'\$[a-zA-Z0-9_]+',  # $ka, $variable pattern
             r'\{\{[a-zA-Z0-9_]+\}\}',  # {{placeholder}} pattern
             r'\[\[[a-zA-Z0-9_]+\]\]'   # [[placeholder]] pattern
         ]
+        
+        # Language code mapping for proper identification
+        self.language_map = {
+            "georgian": "ka",
+            "english": "en",
+            "russian": "ru",
+            "spanish": "es",
+            "french": "fr",
+            "german": "de",
+            "italian": "it",
+            "japanese": "ja",
+            "chinese": "zh",
+            "arabic": "ar",
+            # Add more as needed
+        }
+        
+        # Reverse mapping for display names
+        self.language_display_names = {code: name for name, code in self.language_map.items()}
+        self.language_display_names.update({
+            "ka": "Georgian",
+            "en": "English",
+            "ru": "Russian",
+            "es": "Spanish",
+            "fr": "French",
+            "de": "German",
+            "it": "Italian",
+            "ja": "Japanese",
+            "zh": "Chinese",
+            "ar": "Arabic"
+        })
 
+    def get_language_code(self, language: str) -> str:
+        """Convert language name to ISO code for configuration lookup"""
+        # If already a code, return lower case
+        if len(language) == 2:
+            return language.lower()
+            
+        # Try to get language code from name
+        return self.language_map.get(language.lower(), "default")
+    
+    def get_language_display_name(self, language_code: str) -> str:
+        """Convert language code to a display name"""
+        return self.language_display_names.get(language_code.lower(), language_code)
+    
+    def get_language_config(self, language: str) -> Dict[str, Any]:
+        """Get language-specific configuration parameters"""
+        lang_code = self.get_language_code(language)
+        
+        # Get language specific config or default if not found
+        if lang_code in self.language_config:
+            return self.language_config[lang_code]
+        else:
+            return self.language_config["default"]
+    
+    def get_max_chunk_size(self, to_lang: str) -> int:
+        """Get the appropriate maximum chunk size for a given language"""
+        lang_config = self.get_language_config(to_lang)
+        return lang_config.get("max_chunk_size", 9000)
+    
     def normalize_index(self, index_text):
         """Normalize index numbers by fixing common OCR and formatting errors"""
         if not index_text:
@@ -103,7 +145,172 @@ class TranslationService:
         index_text = re.sub(r'1\.1\.1\.42', '1.1.1.4.2', index_text)
         
         return index_text
-    
+
+    def tag_untranslatable_content(self, html_content: str) -> str:
+        """
+        Tag content that should not be translated with HTML comments
+        to help the model preserve them correctly.
+        """
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # For email addresses
+        email_pattern = re.compile(r'[\w.+-]+@[\w-]+\.[\w.-]+')
+        for tag in list(soup.find_all(string=True)):  # Use list() to create a static copy of elements
+            if isinstance(tag, NavigableString) and not isinstance(tag, Comment):
+                # Skip style tags
+                if tag.parent and tag.parent.name == 'style':
+                    continue
+                    
+                content = str(tag)
+                # Find all email addresses
+                matches = list(email_pattern.finditer(content))
+                if matches:
+                    # Create new string with all email addresses preserved
+                    new_text = content
+                    for email in reversed(matches):  # Process in reverse to avoid index issues
+                        email_text = email.group(0)
+                        start, end = email.span()
+                        new_text = new_text[:start] + f"<!--PRESERVE-->{email_text}<!--/PRESERVE-->" + new_text[end:]
+                    
+                    # Only replace if we actually modified the content
+                    if new_text != content and tag.parent:
+                        tag.replace_with(NavigableString(new_text))
+        
+        # For URLs in href attributes
+        for tag in soup.find_all(href=True):
+            tag['href'] = f"<!--PRESERVE-->{tag['href']}<!--/PRESERVE-->"
+            
+        # For technical codes, IDs, etc.
+        code_pattern = re.compile(r'\b[A-Z0-9]{5,}\b')
+        for tag in list(soup.find_all(string=True)):  # Use list() to create a static copy
+            if isinstance(tag, NavigableString) and not isinstance(tag, Comment):
+                if not tag.parent:  # Skip tags without a parent
+                    continue
+                    
+                content = str(tag)
+                # Find all technical codes
+                matches = list(code_pattern.finditer(content))
+                if matches:
+                    # Create new string with all codes preserved
+                    new_text = content
+                    for code in reversed(matches):  # Process in reverse to avoid index issues
+                        code_text = code.group(0)
+                        start, end = code.span()
+                        new_text = new_text[:start] + f"<!--PRESERVE-->{code_text}<!--/PRESERVE-->" + new_text[end:]
+                    
+                    # Only replace if we actually modified the content
+                    if new_text != content:
+                        tag.replace_with(NavigableString(new_text))
+                
+        return str(soup)
+
+    def clean_preservation_tags(self, html_content: str) -> str:
+        """
+        Thoroughly remove all preservation tags from HTML content using
+        multiple approaches to ensure all tags are removed properly.
+        """
+        # First attempt with BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            if 'PRESERVE' in comment:
+                # Extract the preserved content
+                match = re.search(r'<!--PRESERVE-->(.*?)<!--/PRESERVE-->', str(comment))
+                if match:
+                    preserved_content = match.group(1)
+                    # Replace the comment with the preserved content
+                    comment.replace_with(preserved_content)
+        html_content = str(soup)
+        
+        # Regex-based cleanup for any remaining tags in various formats
+        # Standard HTML comment format
+        html_content = re.sub(r'<!--PRESERVE-->', '', html_content)
+        html_content = re.sub(r'<!--/PRESERVE-->', '', html_content)
+        
+        # HTML-encoded format
+        html_content = re.sub(r'&lt;!--PRESERVE--&gt;', '', html_content)
+        html_content = re.sub(r'&lt;!--/PRESERVE--&gt;', '', html_content)
+        
+        # Unicode escape format
+        html_content = re.sub(r'\\u003c!--PRESERVE--\\u003e', '', html_content)
+        html_content = re.sub(r'\\u003c!--/PRESERVE--\\u003e', '', html_content)
+        
+        # Any other potential nested patterns
+        html_content = re.sub(r'<!--.*?PRESERVE.*?-->', '', html_content)
+        
+        return html_content
+
+    def fix_placeholder_issues(self, translated_text: str, original_html: str) -> str:
+        """
+        Fix placeholder issues in translated text by comparing with original content.
+        """
+        logger.info("Attempting to fix placeholder issues in translation")
+        
+        # Parse both HTML documents
+        soup_orig = BeautifulSoup(original_html, 'html.parser')
+        soup_trans = BeautifulSoup(translated_text, 'html.parser')
+        
+        # Function to replace placeholders with original text if necessary
+        def process_node(trans_node, orig_node):
+            # If this is a text node
+            if isinstance(trans_node, NavigableString) and isinstance(orig_node, NavigableString):
+                text = str(trans_node)
+                # Check for placeholder pattern
+                has_placeholder = any(re.search(pattern, text) for pattern in self.placeholder_patterns)
+                if has_placeholder:
+                    # Use original text as fallback
+                    logger.info(f"Replacing placeholder text: '{text}' with original content")
+                    return NavigableString(str(orig_node))
+            
+            return None  # No change
+        
+        # Try to fix placeholders while preserving structure
+        try:
+            # Map corresponding elements by structural position and fix placeholders
+            def process_trees(trans_elem, orig_elem):
+                # Process children only if both elements exist and have same tag
+                if trans_elem and orig_elem and trans_elem.name == orig_elem.name:
+                    # Process each child
+                    trans_children = list(trans_elem.children)
+                    orig_children = list(orig_elem.children)
+                    
+                    # If element counts match, we can try to align directly
+                    if len(trans_children) == len(orig_children):
+                        for i in range(len(trans_children)):
+                            if i >= len(trans_children) or i >= len(orig_children):
+                                break  # Safety check
+                                
+                            t_child = trans_children[i]
+                            o_child = orig_children[i] 
+                            
+                            # If both are strings, check for placeholders
+                            if isinstance(t_child, NavigableString) and isinstance(o_child, NavigableString):
+                                replacement = process_node(t_child, o_child)
+                                if replacement and t_child.parent:  # Only replace if parent exists
+                                    t_child.replace_with(replacement)
+                            # Recursive processing for elements
+                            elif hasattr(t_child, 'name') and hasattr(o_child, 'name'):
+                                process_trees(t_child, o_child)
+            
+            # Start recursive processing from the root
+            process_trees(soup_trans, soup_orig)
+            result = str(soup_trans)
+            
+            # Final check for any remaining placeholders
+            final_placeholders = []
+            for pattern in self.placeholder_patterns:
+                final_placeholders.extend(re.findall(pattern, result))
+            
+            if final_placeholders:
+                logger.warning(f"After fixing, {len(final_placeholders)} placeholders remain")
+            else:
+                logger.info("Successfully removed all placeholders")
+                
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error fixing placeholders: {str(e)}")
+            return translated_text  # Return original on error
+        
     async def extract_from_image(self, image_bytes: bytes) -> str:
         """Extract content from an image using Google Gemini."""
         if not self.extraction_model:
@@ -276,7 +483,7 @@ Extract the content with minimal unnecessary line breaks, using them only to sep
                                 logger.warning(f"Could not delete temp file {img_path}: {e}")
                 except Exception as e:
                     logger.warning(f"Error during file cleanup: {e}")
-    
+
     async def extract_page_content(self, pdf_bytes: bytes, page_index: int) -> str:
         """Extract content from a PDF page using Google Gemini."""
         if not self.extraction_model:
@@ -481,186 +688,15 @@ Carefully analyze each section of the document and apply the most appropriate HT
             logger.debug(f"Resources cleaned up for page {page_index + 1}")
             logger.info(f"Total processing time for page {page_index + 1}: {time.time() - page_start_time:.2f} seconds")
 
-    def get_language_code(self, language: str) -> str:
-        """Convert language name to ISO code for configuration lookup"""
-        # Common language mappings
-        language_map = {
-            "georgian": "ka",
-            "english": "en",
-            "russian": "ru",
-            "spanish": "es",
-            "french": "fr",
-            "german": "de",
-            "italian": "it",
-            "japanese": "ja",
-            "chinese": "zh",
-            "arabic": "ar"
-        }
-        
-        # Try to get language code
-        if language.lower() in language_map:
-            return language_map[language.lower()]
-        
-        # If language is already a code (2 chars)
-        if len(language) == 2:
-            return language.lower()
-            
-        # Default
-        return "default"
+    async def _get_formatted_text_from_gemini(self, page):
+        """Legacy method - retained for backward compatibility"""
+        return await self._get_formatted_text_from_gemini_buffer(page)
     
-    def get_language_config(self, language: str) -> Dict[str, Any]:
-        """Get language-specific configuration parameters"""
-        lang_code = self.get_language_code(language)
-        
-        # Get language specific config or default if not found
-        if lang_code in self.language_config:
-            return self.language_config[lang_code]
-        else:
-            return self.language_config["default"]
-    
-    def tag_untranslatable_content(self, html_content: str) -> str:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # For email addresses
-        email_pattern = re.compile(r'[\w.+-]+@[\w-]+\.[\w.-]+')
-        for tag in list(soup.find_all(string=True)):  # Use list() to create a static copy of elements
-            if isinstance(tag, NavigableString) and not isinstance(tag, Comment):
-                # Skip style tags
-                if tag.parent and tag.parent.name == 'style':
-                    continue
-                    
-                content = str(tag)
-                # Find all email addresses
-                matches = list(email_pattern.finditer(content))
-                if matches:
-                    # Create new string with all email addresses preserved
-                    new_text = content
-                    for email in reversed(matches):  # Process in reverse to avoid index issues
-                        email_text = email.group(0)
-                        start, end = email.span()
-                        new_text = new_text[:start] + f"<!--PRESERVE-->{email_text}<!--/PRESERVE-->" + new_text[end:]
-                    
-                    # Only replace if we actually modified the content
-                    if new_text != content:
-                        # Make sure we only replace if the tag is still in the tree
-                        if tag.parent:
-                            tag.replace_with(NavigableString(new_text))
-        
-        # For URLs in href attributes
-        for tag in soup.find_all(href=True):
-            tag['href'] = f"<!--PRESERVE-->{tag['href']}<!--/PRESERVE-->"
-            
-        # For technical codes, IDs, etc.
-        code_pattern = re.compile(r'\b[A-Z0-9]{5,}\b')
-        for tag in list(soup.find_all(string=True)):  # Use list() to create a static copy
-            if isinstance(tag, NavigableString) and not isinstance(tag, Comment):
-                if not tag.parent:  # Skip tags without a parent
-                    continue
-                    
-                content = str(tag)
-                # Find all technical codes
-                matches = list(code_pattern.finditer(content))
-                if matches:
-                    # Create new string with all codes preserved
-                    new_text = content
-                    for code in reversed(matches):  # Process in reverse to avoid index issues
-                        code_text = code.group(0)
-                        start, end = code.span()
-                        new_text = new_text[:start] + f"<!--PRESERVE-->{code_text}<!--/PRESERVE-->" + new_text[end:]
-                    
-                    # Only replace if we actually modified the content
-                    if new_text != content:
-                        tag.replace_with(NavigableString(new_text))
-                    
-        return str(soup)
-    
-    def fix_placeholder_issues(self, translated_text: str, original_html: str) -> str:
-        """
-        Fix placeholder issues in translated text, especially for Georgian
-        
-        This function detects and replaces placeholder patterns with proper content
-        by comparing the translated HTML with the original HTML structure.
-        """
-        logger.info("Attempting to fix placeholder issues in translation")
-        
-        # Parse both HTML documents
-        soup_orig = BeautifulSoup(original_html, 'html.parser')
-        soup_trans = BeautifulSoup(translated_text, 'html.parser')
-        
-        # Function to replace $ka placeholders with original text if necessary
-        def process_node(trans_node, orig_node):
-            # If this is a text node
-            if isinstance(trans_node, NavigableString) and isinstance(orig_node, NavigableString):
-                text = str(trans_node)
-                # Check for placeholder pattern
-                has_placeholder = any(re.search(pattern, text) for pattern in self.placeholder_patterns)
-                if has_placeholder:
-                    # Use original text as fallback
-                    logger.info(f"Replacing placeholder text: '{text}' with original content")
-                    return NavigableString(str(orig_node))
-            
-            return None  # No change
-        
-        # Try to fix placeholders while preserving structure
-        try:
-            # Map corresponding elements by structural position and fix placeholders
-            def process_trees(trans_elem, orig_elem):
-                # Process children only if both elements exist and have same tag
-                if trans_elem and orig_elem and trans_elem.name == orig_elem.name:
-                    # Process each child
-                    trans_children = list(trans_elem.children)
-                    orig_children = list(orig_elem.children)
-                    
-                    # If element counts match, we can try to align directly
-                    if len(trans_children) == len(orig_children):
-                        for i in range(len(trans_children)):
-                            if i >= len(trans_children) or i >= len(orig_children):
-                                break  # Safety check
-                                
-                            t_child = trans_children[i]
-                            o_child = orig_children[i] 
-                            
-                            # If both are strings, check for placeholders
-                            if isinstance(t_child, NavigableString) and isinstance(o_child, NavigableString):
-                                replacement = process_node(t_child, o_child)
-                                if replacement and t_child.parent:  # Only replace if parent exists
-                                    t_child.replace_with(replacement)
-                            # Recursive processing for elements
-                            elif hasattr(t_child, 'name') and hasattr(o_child, 'name'):
-                                process_trees(t_child, o_child)
-            
-            # Start recursive processing from the root
-            process_trees(soup_trans, soup_orig)
-            result = str(soup_trans)
-            
-            # Final check for any remaining placeholders
-            final_placeholders = []
-            for pattern in self.placeholder_patterns:
-                final_placeholders.extend(re.findall(pattern, result))
-            
-            if final_placeholders:
-                logger.warning(f"After fixing, {len(final_placeholders)} placeholders remain")
-            else:
-                logger.info("Successfully removed all placeholders")
-                
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error fixing placeholders: {str(e)}")
-            return translated_text  # Return original on error
-
-    # Method for language-specific chunk sizing
-    def get_max_chunk_size(self, to_lang: str) -> int:
-        """Get the appropriate maximum chunk size for a given language"""
-        lang_config = self.get_language_config(to_lang)
-        return lang_config.get("max_chunk_size", 10000)
-    
-    # Method 1: Translate chunk with enhanced Georgian language support
     async def translate_chunk(self, html_content: str, from_lang: str, to_lang: str, retries: int = 3, chunk_id: str = None) -> str:
         """
-        Translate a chunk of HTML content to the target language with enhanced language support.
-        This improved version includes specific handling for Georgian and other complex languages,
-        as well as detection and prevention of placeholder issues.
+        Translate a chunk of HTML content to the target language.
+        Enhanced version that handles all languages consistently with special attention to 
+        prevention of placeholder issues and proper preservation of content.
         """
         if not self.translation_model:
             logger.error("Google API key not configured for translation")
@@ -670,67 +706,38 @@ Carefully analyze each section of the document and apply the most appropriate HT
             chunk_id = f"{hashlib.md5(html_content.encode()).hexdigest()}"[:7]
                 
         start_time = time.time()
-        logger.info(f"Starting translation of chunk {chunk_id} ({len(html_content)} chars) to {to_lang}")
+        
+        # Get the proper language display name (for better prompting)
+        to_lang_display = self.get_language_display_name(to_lang)
+        logger.info(f"Starting translation of chunk {chunk_id} ({len(html_content)} chars) to {to_lang_display}")
         
         # Save original HTML for comparison and fallback
         original_html = html_content
         
         # Get language-specific configuration
         lang_config = self.get_language_config(to_lang)
-        logger.info(f"Using language-specific config for {to_lang}: {lang_config}")
+        logger.info(f"Using configuration for {to_lang_display}: {lang_config}")
         
         # Tag content that should not be translated
         html_content_with_tags = self.tag_untranslatable_content(html_content)
-        
-        # Special handling for Georgian to prevent $ka placeholder issue
-        is_georgian = to_lang.lower() in ["georgian", "ka", "kat", "geo"]
         
         last_error = None
         
         for attempt in range(1, retries + 1):
             try:
-                # Create a language-specific prompt designed for HTML translation
-                if is_georgian:
-                    prompt = f"""
-Translate all text content in this HTML to Georgian (ქართული).
+                # Create a unified prompt for all languages with strong anti-placeholder instructions
+                prompt = f"""Translate all text content in this HTML to {to_lang_display}.
 
 STRICT AND CRITICAL RULES:
-1. Translate ALL text content to Georgian language
-2. DO NOT replace any words with placeholders like '$ka' or similar patterns
-3. Every word MUST be properly translated to Georgian - no placeholder tokens like '$ka' are allowed
-4. Preserve ALL HTML tags, attributes, CSS classes, and structure exactly as they appear in the input
-5. DO NOT translate content within HTML comments marked with <!--PRESERVE--> and <!--/PRESERVE-->
-6. DO NOT translate content within <style> tags
-7. Don't translate these specific items:
-   - Technical codes and identifiers (like product IDs, registration numbers)
-   - Email addresses and URLs
-   - Physical addresses 
-   - Brand and company names
-   - Technical standards (like EN 14411:2016)
-   - Unit measurements and technical values (like NPD, N/mm2)
-
-IMPORTANT ABOUT GEORGIAN LANGUAGE:
-- Ensure proper use of Georgian characters (ქართული ანბანი)
-- Maintain proper Georgian grammar and sentence structure
-- Pay special attention to preserving technical terms that should remain untranslated
-
-Here is the HTML to translate:
-
-{html_content_with_tags}
-"""
-                else:
-                    # Regular prompt for other languages
-                    prompt = f"""Translate all text content in this HTML to {to_lang}.
-
-IMPORTANT RULES:
-1. Translate ALL text content to {to_lang} regardless of what language it's in
-2. Preserve ALL HTML tags, attributes, CSS classes, and structure exactly as they appear in the input
-3. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML
-4. Keep all spacing, indentation, and formatting consistent with the input
-5. Ensure your output is valid HTML that can be rendered directly in a browser
-6. DO NOT translate content within HTML comments marked with <!--PRESERVE--> and <!--/PRESERVE-->
-7. Don't translate content within <style> tags
-8. Don't translate these specific items:
+1. Translate ALL text content to {to_lang_display} regardless of what language it's in
+2. DO NOT replace any words with placeholders like '$variable' or similar patterns
+3. Preserve ALL HTML tags, attributes, CSS classes, and structure exactly as they appear in the input
+4. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML
+5. Keep all spacing, indentation, and formatting consistent with the input
+6. Ensure your output is valid HTML that can be rendered directly in a browser
+7. DO NOT translate content within HTML comments marked with <!--PRESERVE--> and <!--/PRESERVE-->
+8. DO NOT translate content within <style> tags
+9. Don't translate these specific items:
    - Technical codes and identifiers (like product IDs, registration numbers)
    - Email addresses and URLs
    - Physical addresses 
@@ -746,13 +753,13 @@ Here is the HTML to translate:
                 logger.info(f"Sending chunk {chunk_id} to Gemini for translation (attempt {attempt}/{retries})")
                 translation_start = time.time()
                 
-                # Use language-specific configuration parameters
+                # Use configuration parameters
                 response = self.translation_model.generate_content(
                     prompt,
                     generation_config={
-                        "temperature": lang_config.get("temperature", 0.1),
-                        "top_p": lang_config.get("top_p", 0.95),
-                        "top_k": lang_config.get("top_k", 40),
+                        "temperature": lang_config.get("temperature", 0.15),
+                        "top_p": lang_config.get("top_p", 0.97),
+                        "top_k": lang_config.get("top_k", 45),
                         "max_output_tokens": lang_config.get("max_output_tokens", 8192)
                     }
                 )
@@ -803,68 +810,36 @@ Here is the HTML to translate:
                     logger.error(f"Raw output starts with: {translated_text[:100]}...")
                     raise TranslationError("Translation result is not valid HTML", "CONTENT_ERROR")
                 
-                # For Georgian, check for $ka placeholder issues
-                if is_georgian:
-                    # Check for placeholder patterns that indicate failed translation
-                    has_placeholders = False
-                    placeholder_count = 0
-                    for pattern in self.placeholder_patterns:
-                        matches = re.findall(pattern, translated_text)
-                        if matches:
-                            placeholder_count += len(matches)
-                            placeholder_samples = matches[:5]  # Show up to 5 examples
-                            logger.error(f"Found {len(matches)} placeholders matching {pattern}: {placeholder_samples}")
-                            has_placeholders = True
-                    
-                    # If we have placeholders and this is Georgian, retry with different parameters
-                    if has_placeholders and placeholder_count > 5:
-                        logger.error(f"Detected {placeholder_count} placeholder issues in Georgian translation")
-                        if attempt < retries:
-                            logger.info(f"Will retry with modified prompt for Georgian")
-                            raise TranslationError("Placeholder issues detected", "TRANSLATION_ERROR")
-                        else:
-                            # On last attempt, try to clean up placeholders
-                            logger.warning(f"Final attempt: trying to fix placeholder issues in Georgian translation")
-                            
-                            # Try to fix placeholders by passing through a cleanup step
-                            fixed_text = self.fix_placeholder_issues(translated_text, original_html)
-                            if fixed_text != translated_text:
-                                logger.info(f"Applied placeholder fixes to Georgian translation")
-                                translated_text = fixed_text
+                # Check for placeholder issues in the translated text
+                has_placeholders = False
+                placeholder_count = 0
+                for pattern in self.placeholder_patterns:
+                    matches = re.findall(pattern, translated_text)
+                    if matches:
+                        placeholder_count += len(matches)
+                        placeholder_samples = matches[:5]  # Show up to 5 examples
+                        logger.error(f"Found {len(matches)} placeholders matching {pattern}: {placeholder_samples}")
+                        has_placeholders = True
                 
-                # Remove the preservation comments after translation
-                soup = BeautifulSoup(translated_text, 'html.parser')
-                for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
-                    if 'PRESERVE' in comment:
-                        # Extract the preserved content
-                        match = re.search(r'<!--PRESERVE-->(.*?)<!--/PRESERVE-->', str(comment))
-                        if match:
-                            preserved_content = match.group(1)
-                            # Replace the comment with the preserved content
-                            comment.replace_with(preserved_content)
-                translated_text = str(soup)
-
-                # Clean up any HTML-encoded preservation tags
-                translated_text = re.sub(r'&lt;!--PRESERVE--&gt;', '', translated_text)
-                translated_text = re.sub(r'&lt;!--/PRESERVE--&gt;', '', translated_text)
-
-                # Clean up any double-encoded or nested preservation patterns
-                translated_text = re.sub(r'<!--PRESERVE-->|&lt;!--PRESERVE--&gt;|\\u003c!--PRESERVE--\\u003e', '', translated_text)
-                translated_text = re.sub(r'<!--/PRESERVE-->|&lt;!--/PRESERVE--&gt;|\\u003c!--/PRESERVE--\\u003e', '', translated_text)
-
-                # Clean up any weird nested patterns that might occur
-                pattern = re.compile(r'<!--.*?PRESERVE.*?-->', re.DOTALL)
-                translated_text = pattern.sub('', translated_text)
-                
-                # Debug section - add this after the cleanup
-                if '<!--PRESERVE-->' in translated_text or '&lt;!--PRESERVE--&gt;' in translated_text:
-                    logger.error(f"Preservation tags still present after cleanup! Sample: {translated_text[:500]}")
-                    # Log exact positions where they occur
-                    for match in re.finditer(r'<!--PRESERVE-->|&lt;!--PRESERVE--&gt;|PRESERVE', translated_text):
-                        start, end = match.span()
-                        context = translated_text[max(0, start-20):min(end+20, len(translated_text))]
-                        logger.error(f"Found at position {start}-{end}: Context: {context}")
+                # If we have placeholders, try to fix them or retry
+                if has_placeholders and placeholder_count > 5:
+                    logger.error(f"Detected {placeholder_count} placeholder issues in translation")
+                    if attempt < retries:
+                        logger.info(f"Will retry with modified prompt")
+                        raise TranslationError("Placeholder issues detected", "TRANSLATION_ERROR")
+                    else:
+                        # On last attempt, try to clean up placeholders
+                        logger.warning(f"Final attempt: trying to fix placeholder issues in translation")
                         
+                        # Try to fix placeholders by passing through a cleanup step
+                        fixed_text = self.fix_placeholder_issues(translated_text, original_html)
+                        if fixed_text != translated_text:
+                            logger.info(f"Applied placeholder fixes to translation")
+                            translated_text = fixed_text
+                
+                # Clean up all preservation tags thoroughly
+                translated_text = self.clean_preservation_tags(translated_text)
+                
                 # Verify that the HTML structure is preserved
                 # If the original had a div.document or div.page, the translated version should too
                 if ('<div class="document"' in original_html or "<div class='document'" in original_html) and \
@@ -890,6 +865,17 @@ Here is the HTML to translate:
                             logger.info(f"Fixed document structure in translated content")
                     except Exception as struct_error:
                         logger.warning(f"Couldn't fix document structure: {str(struct_error)}")
+                
+                # Final check to make sure no preservation markers remain
+                if "<!--PRESERVE-->" in translated_text or "<!--/PRESERVE-->" in translated_text:
+                    logger.warning("Some preservation markers remain, applying final cleanup")
+                    translated_text = re.sub(r'<!--PRESERVE-->|<!--/PRESERVE-->', '', translated_text)
+                
+                # Final debug check for placeholders
+                if any(re.search(pattern, translated_text) for pattern in self.placeholder_patterns):
+                    logger.warning("Placeholders still exist in final output")
+                else:
+                    logger.info("No placeholders detected in final output")
                 
                 logger.info(f"Successfully translated chunk {chunk_id}, length: {len(translated_text)} chars")
                 logger.info(f"Translation took {time.time() - start_time:.2f} seconds")
@@ -917,8 +903,7 @@ Here is the HTML to translate:
             f"Translation failed after all retries: {str(last_error)}",
             "TRANSLATION_ERROR"
         )
-
-    # Method 2: Split content into chunks with language awareness
+    
     def split_content_into_chunks(self, content: str, max_size: int, to_lang: str = None) -> List[str]:
         """
         Split content into chunks of maximum size while preserving HTML structure.
@@ -1275,8 +1260,7 @@ Here is the HTML to translate:
             
             logger.info(f"Split content into {len(chunks)} chunks using fallback method")
             return chunks
-        
-    # Method 3: Combine HTML content
+    
     def combine_html_content(self, html_contents):
         """
         Combine multiple HTML contents into a single document.
@@ -1342,6 +1326,9 @@ Here is the HTML to translate:
                 content = re.sub(r'</?head[^>]*>', '', content, flags=re.IGNORECASE)
                 content = re.sub(r'</?body[^>]*>', '', content, flags=re.IGNORECASE)
                 
+                # Make sure no preservation tags remain
+                content = self.clean_preservation_tags(content)
+                
                 # Parse with BeautifulSoup
                 soup = BeautifulSoup(content, 'html.parser')
                 
@@ -1361,6 +1348,7 @@ Here is the HTML to translate:
                             page_text = page.get_text()[:100].replace('\n', ' ')
                             logger.info(f"  Page {j+1} from chunk {i+1} starts with: {page_text}...")
                     else:
+                        # If no pages but has document, extract the document content
                         # If no pages but has document, extract the document content
                         logger.info(f"  No pages found in document div of chunk {i+1}, extracting all content")
                         doc_div = soup.find('div', class_='document')
@@ -1401,6 +1389,9 @@ Here is the HTML to translate:
             else:
                 combined_html = "".join(page_contents)
                 logger.info("No document wrapper needed for combined content")
+            
+            # Check for and clean any remaining preservation tags
+            combined_html = self.clean_preservation_tags(combined_html)
             
             # Log the final document structure
             soup = BeautifulSoup(combined_html, 'html.parser')
@@ -1447,6 +1438,9 @@ Here is the HTML to translate:
                 content = re.sub(r'</?head[^>]*>', '', content, flags=re.IGNORECASE)
                 content = re.sub(r'</?body[^>]*>', '', content, flags=re.IGNORECASE)
                 
+                # Clean preservation tags
+                content = self.clean_preservation_tags(content)
+                
                 # Remove document wrapper if present and we're adding our own
                 if needs_document:
                     content = re.sub(r'<div class=["\'](document|chunk)["\'][^>]*>(.*?)</div>', r'\2', content, flags=re.DOTALL|re.IGNORECASE)
@@ -1467,6 +1461,9 @@ Here is the HTML to translate:
             
             if needs_document:
                 combined += '</div>'
+            
+            # One final cleanup for any remaining preservation tags
+            combined = self.clean_preservation_tags(combined)
                 
             logger.info(f"Combined chunks into document of {len(combined)} chars using basic approach")
             return combined
@@ -1805,7 +1802,7 @@ Here is the HTML to translate:
                 "success": False,
                 "error": str(e)
             }
-        
+
     def _update_translation_status_sync(self, db, process_id, status, progress=0):
         """Synchronous version of update_translation_status for the worker."""
         try:
@@ -1827,6 +1824,6 @@ Here is the HTML to translate:
             if 'db' in locals() and db:
                 db.rollback()
             return False
-# update
+
 # Create a singleton instance
 translation_service = TranslationService()
