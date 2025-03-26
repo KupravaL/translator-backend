@@ -519,51 +519,58 @@ Carefully analyze each section of the document and apply the most appropriate HT
             return self.language_config["default"]
     
     def tag_untranslatable_content(self, html_content: str) -> str:
-        """
-        Tag content that should not be translated with HTML comments
-        to help the model preserve them correctly.
-        """
         soup = BeautifulSoup(html_content, 'html.parser')
         
         # For email addresses
         email_pattern = re.compile(r'[\w.+-]+@[\w-]+\.[\w.-]+')
-        for tag in soup.find_all(string=True):
+        for tag in list(soup.find_all(string=True)):  # Use list() to create a static copy of elements
             if isinstance(tag, NavigableString) and not isinstance(tag, Comment):
                 # Skip style tags
-                if tag.parent.name == 'style':
+                if tag.parent and tag.parent.name == 'style':
                     continue
                     
                 content = str(tag)
                 # Find all email addresses
-                for email in email_pattern.finditer(content):
-                    # Replace the email with a tagged version
-                    email_text = email.group(0)
-                    new_text = content.replace(
-                        email_text, 
-                        f"<!--PRESERVE-->{email_text}<!--/PRESERVE-->"
-                    )
-                    # Replace the content in the soup
-                    tag.replace_with(NavigableString(new_text))
+                matches = list(email_pattern.finditer(content))
+                if matches:
+                    # Create new string with all email addresses preserved
+                    new_text = content
+                    for email in reversed(matches):  # Process in reverse to avoid index issues
+                        email_text = email.group(0)
+                        start, end = email.span()
+                        new_text = new_text[:start] + f"<!--PRESERVE-->{email_text}<!--/PRESERVE-->" + new_text[end:]
+                    
+                    # Only replace if we actually modified the content
+                    if new_text != content:
+                        # Make sure we only replace if the tag is still in the tree
+                        if tag.parent:
+                            tag.replace_with(NavigableString(new_text))
         
         # For URLs in href attributes
         for tag in soup.find_all(href=True):
             tag['href'] = f"<!--PRESERVE-->{tag['href']}<!--/PRESERVE-->"
             
         # For technical codes, IDs, etc.
-        # This is a simplified approach - in a real app, you might want to use 
-        # more sophisticated pattern matching based on your specific data
         code_pattern = re.compile(r'\b[A-Z0-9]{5,}\b')
-        for tag in soup.find_all(string=True):
+        for tag in list(soup.find_all(string=True)):  # Use list() to create a static copy
             if isinstance(tag, NavigableString) and not isinstance(tag, Comment):
+                if not tag.parent:  # Skip tags without a parent
+                    continue
+                    
                 content = str(tag)
                 # Find all technical codes
-                for code in code_pattern.finditer(content):
-                    code_text = code.group(0)
-                    new_text = content.replace(
-                        code_text, 
-                        f"<!--PRESERVE-->{code_text}<!--/PRESERVE-->"
-                    )
-                    tag.replace_with(NavigableString(new_text))
+                matches = list(code_pattern.finditer(content))
+                if matches:
+                    # Create new string with all codes preserved
+                    new_text = content
+                    for code in reversed(matches):  # Process in reverse to avoid index issues
+                        code_text = code.group(0)
+                        start, end = code.span()
+                        new_text = new_text[:start] + f"<!--PRESERVE-->{code_text}<!--/PRESERVE-->" + new_text[end:]
+                    
+                    # Only replace if we actually modified the content
+                    if new_text != content:
+                        tag.replace_with(NavigableString(new_text))
                     
         return str(soup)
     
@@ -607,13 +614,16 @@ Carefully analyze each section of the document and apply the most appropriate HT
                     # If element counts match, we can try to align directly
                     if len(trans_children) == len(orig_children):
                         for i in range(len(trans_children)):
+                            if i >= len(trans_children) or i >= len(orig_children):
+                                break  # Safety check
+                                
                             t_child = trans_children[i]
                             o_child = orig_children[i] 
                             
                             # If both are strings, check for placeholders
                             if isinstance(t_child, NavigableString) and isinstance(o_child, NavigableString):
                                 replacement = process_node(t_child, o_child)
-                                if replacement:
+                                if replacement and t_child.parent:  # Only replace if parent exists
                                     t_child.replace_with(replacement)
                             # Recursive processing for elements
                             elif hasattr(t_child, 'name') and hasattr(o_child, 'name'):
