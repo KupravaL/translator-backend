@@ -844,10 +844,27 @@ Here is the HTML to translate:
                             comment.replace_with(preserved_content)
                 translated_text = str(soup)
 
-                # Additional cleanup for any remaining preservation tags using regex
-                translated_text = re.sub(r'<!--PRESERVE-->', '', translated_text)
-                translated_text = re.sub(r'<!--/PRESERVE-->', '', translated_text)
+                # Clean up any HTML-encoded preservation tags
+                translated_text = re.sub(r'&lt;!--PRESERVE--&gt;', '', translated_text)
+                translated_text = re.sub(r'&lt;!--/PRESERVE--&gt;', '', translated_text)
+
+                # Clean up any double-encoded or nested preservation patterns
+                translated_text = re.sub(r'<!--PRESERVE-->|&lt;!--PRESERVE--&gt;|\\u003c!--PRESERVE--\\u003e', '', translated_text)
+                translated_text = re.sub(r'<!--/PRESERVE-->|&lt;!--/PRESERVE--&gt;|\\u003c!--/PRESERVE--\\u003e', '', translated_text)
+
+                # Clean up any weird nested patterns that might occur
+                pattern = re.compile(r'<!--.*?PRESERVE.*?-->', re.DOTALL)
+                translated_text = pattern.sub('', translated_text)
                 
+                # Debug section - add this after the cleanup
+                if '<!--PRESERVE-->' in translated_text or '&lt;!--PRESERVE--&gt;' in translated_text:
+                    logger.error(f"Preservation tags still present after cleanup! Sample: {translated_text[:500]}")
+                    # Log exact positions where they occur
+                    for match in re.finditer(r'<!--PRESERVE-->|&lt;!--PRESERVE--&gt;|PRESERVE', translated_text):
+                        start, end = match.span()
+                        context = translated_text[max(0, start-20):min(end+20, len(translated_text))]
+                        logger.error(f"Found at position {start}-{end}: Context: {context}")
+                        
                 # Verify that the HTML structure is preserved
                 # If the original had a div.document or div.page, the translated version should too
                 if ('<div class="document"' in original_html or "<div class='document'" in original_html) and \
