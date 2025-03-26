@@ -1,28 +1,55 @@
 import io
 import base64
 import re
-from bs4 import BeautifulSoup, NavigableString
-from docx import Document
-from docx.shared import Pt, Inches, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from docx.oxml import OxmlElement
 import logging
+from bs4 import BeautifulSoup, NavigableString, Tag
+from docx import Document
+from docx.shared import Pt, Inches, RGBColor, Cm, Twips
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING, WD_BREAK
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement, parse_xml
+from docx.table import _Cell, Table
+import math
 
 logger = logging.getLogger(__name__)
 
 class DocxGeneratorService:
-    def generate_docx(self, html_content: str) -> bytes:
-        """Convert HTML to DOCX with improved structure preservation."""
+    def __init__(self):
+        # Initialize standard and specialty fonts
+        self._register_fonts()
+        
+        # Initialize styles
+        self.styles = {}
+        
+        # Keep track of document structure
+        self.current_section = None
+        self.section_stack = []
+        
+    def _register_fonts(self):
+        """Register standard and specialty fonts for use in PDF."""
         try:
+            # Register default fonts if needed
+            pass
+        except Exception as e:
+            logger.warning(f"Error initializing fonts: {str(e)}")
+    
+    def generate_docx(self, html_content: str) -> bytes:
+        """Convert HTML to DOCX with comprehensive structure and style preservation."""
+        try:
+            # Create document
             doc = Document()
             
             # Configure default paragraph and document settings
             style = doc.styles['Normal']
             style.font.name = 'Arial'
             style.font.size = Pt(11)
+            style.paragraph_format.space_after = Pt(8)
             
-            # Set proper document margins
+            # Add custom styles
+            self._add_custom_styles(doc)
+            
+            # Set document margins
             sections = doc.sections
             for section in sections:
                 section.left_margin = Inches(1)
@@ -30,52 +57,72 @@ class DocxGeneratorService:
                 section.top_margin = Inches(1)
                 section.bottom_margin = Inches(1)
             
-            # Clean up the HTML content before processing
-            # Remove DOCTYPE declarations, comments, and XML declarations
-            html_content = re.sub(r'<!DOCTYPE[^>]*>', '', html_content, flags=re.IGNORECASE)
-            html_content = re.sub(r'<!--.*?-->', '', html_content, flags=re.DOTALL)
-            html_content = re.sub(r'<\?xml[^>]*\?>', '', html_content)
-            html_content = html_content.replace('&nbsp;', ' ')
+            # Clean up the HTML content
+            html_content = self._clean_html_content(html_content)
             
-            # Fix \n characters in the HTML content
-            html_content = html_content.replace('\\n', ' ')
-            
-            # Parse the HTML content
+            # Parse HTML
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Remove all meta, title tags - we don't need them in the DOCX
-            for tag in soup.find_all(['meta', 'title']):
+            # Remove meta and script tags
+            for tag in soup.find_all(['meta', 'script']):
                 tag.decompose()
             
-            # Extract style tags but don't remove them yet (we might need style info)
+            # Extract style tags for reference
             styles = soup.find_all('style')
+            css_content = "\n".join([style.string for style in styles if style.string])
             
-            # Find if there's a document div structure
-            document_div = soup.find('div', class_='document')
+            # Process document structure - analyze document organization
+            # This step helps maintain proper document flow
+            document_structure = self._analyze_document_structure(soup)
             
-            if document_div:
-                # Process each page in the document
-                for page_div in document_div.find_all('div', class_='page'):
-                    # Now remove style tags from this page
-                    for style_tag in page_div.find_all('style'):
-                        style_tag.decompose()
-                    
-                    # Process the content of the page
-                    self._process_content(doc, page_div)
-                    
-                    # Add page break between pages if this isn't the last page
-                    if page_div != document_div.find_all('div', class_='page')[-1]:
+            # Process document based on structure
+            if document_structure:
+                for section_type, element in document_structure:
+                    if section_type == 'heading':
+                        level = int(element.name[1])
+                        heading = doc.add_heading(level=level)
+                        self._process_text_content(heading, element)
+                    elif section_type == 'article':
+                        # Handle article sections properly
+                        article_title = element.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+                        if article_title:
+                            level = int(article_title.name[1])
+                            heading = doc.add_heading(level=level)
+                            self._process_text_content(heading, article_title)
+                        
+                        # Process article content (excluding the title)
+                        for content in element.children:
+                            if isinstance(content, Tag) and content.name not in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                                self._process_element(doc, content, css_content)
+                    elif section_type == 'table':
+                        self._process_table(doc, element, css_content)
+                    elif section_type == 'text':
+                        para = doc.add_paragraph()
+                        self._process_text_content(para, element)
+                    elif section_type == 'page_break':
                         doc.add_page_break()
+                    else:
+                        # Process other sections
+                        self._process_element(doc, element, css_content)
             else:
-                # Fall back to processing the entire content if no document structure
-                # First remove style tags from the soup
-                for style_tag in styles:
-                    style_tag.decompose()
+                # Fallback to basic processing if structure analysis fails
+                document_div = soup.find('div', class_='document')
                 
-                self._process_content(doc, soup)
+                if document_div:
+                    # Handle multi-page documents
+                    for i, page_div in enumerate(document_div.find_all('div', class_='page')):
+                        # Process each page content
+                        self._process_content(doc, page_div, css_content)
+                        
+                        # Add page break between pages
+                        if i < len(document_div.find_all('div', class_='page')) - 1:
+                            doc.add_page_break()
+                else:
+                    # No document structure found, process entire content
+                    self._process_content(doc, soup, css_content)
             
-            # Format document structure for improved appearance
-            self._format_document_structure(doc)
+            # Add headers and footers if present
+            self._add_headers_and_footers(doc, soup)
             
             # Save document to bytes
             docx_stream = io.BytesIO()
@@ -96,458 +143,1009 @@ class DocxGeneratorService:
             error_stream.seek(0)
             return error_stream.getvalue()
 
-    def _format_document_structure(self, doc):
+    def _analyze_document_structure(self, soup):
         """
-        Post-process the document to ensure consistent formatting.
-        This fixes article headings and other structural elements.
+        Analyze the document structure to maintain proper flow and hierarchy.
+        Returns a list of (section_type, element) tuples for ordered processing.
         """
-        # Track paragraphs to modify or delete
-        paragraphs_to_delete = []
-        article_pattern = re.compile(r'^Article\s+(\d+)(.*)$')
+        structure = []
         
-        # First pass: identify articles and structure issues
-        for i, para in enumerate(doc.paragraphs):
-            text = para.text.strip()
+        # Get document container if it exists
+        document_div = soup.find('div', class_='document')
+        
+        if document_div:
+            # Handle multi-page documents
+            pages = document_div.find_all('div', class_='page')
             
-            # Skip empty paragraphs
-            if not text:
-                continue
-            
-            # Fix Article headings
-            article_match = article_pattern.match(text)
-            if article_match and not text.startswith('##'):
-                article_num = article_match.group(1)
-                article_content = article_match.group(2).strip()
+            for page_idx, page in enumerate(pages):
+                # Extract main components from each page
+                page_elements = self._extract_page_structure(page)
+                structure.extend(page_elements)
                 
-                # Create the heading with proper formatting
-                heading_text = f"## Article {article_num}"
-                new_heading = doc.add_paragraph(heading_text)
-                new_heading.style = 'Heading 2'
-                
-                # If there's content after the article number, add as a new paragraph
-                if article_content:
-                    content_para = doc.add_paragraph(article_content)
-                
-                # Mark the original for deletion
-                paragraphs_to_delete.append(para)
+                # Add page break if not the last page
+                if page_idx < len(pages) - 1:
+                    structure.append(('page_break', None))
+        else:
+            # No document structure, process as single page
+            structure = self._extract_page_structure(soup)
         
-        # Second pass: center main headings
-        for para in doc.paragraphs:
-            if para.style.name == 'Heading 1' or para.style.name == 'Title':
-                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        return structure
         
-        # Apply deletions (from end to beginning to preserve indices)
-        for para in reversed(paragraphs_to_delete):
-            p_element = para._element
-            if p_element.getparent() is not None:
-                p_element.getparent().remove(p_element)
+    def _extract_page_structure(self, page_soup):
+        """Extract the elements from a page in their logical order."""
+        elements = []
+        
+        # Process headings first - they define document structure
+        headings = page_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+        
+        # Extract articles and sections
+        articles = page_soup.find_all('article')
+        sections = page_soup.find_all('section')
+        
+        # Extract tables
+        tables = page_soup.find_all('table')
+        
+        # Now build the page structure in logical order
+        
+        # First pass: get all direct children of the page in order
+        # This preserves the natural flow of content
+        if isinstance(page_soup, Tag):
+            for child in page_soup.children:
+                if isinstance(child, NavigableString):
+                    if child.strip():
+                        elements.append(('text', child))
+                elif child.name:
+                    if child.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                        elements.append(('heading', child))
+                    elif child.name == 'article':
+                        elements.append(('article', child))
+                    elif child.name == 'section':
+                        elements.append(('article', child))  # Treat sections similarly to articles
+                    elif child.name == 'table':
+                        elements.append(('table', child))
+                    elif child.name == 'p':
+                        elements.append(('text', child))
+                    elif child.name in ['div', 'span']:
+                        # Check if it contains meaningful content
+                        if child.get_text().strip():
+                            elements.append(('container', child))
+                    elif child.name not in ['style', 'script', 'meta', 'link']:
+                        elements.append(('element', child))
+        
+        return elements
+
+    def _clean_html_content(self, html_content):
+        """Clean up HTML content for processing."""
+        # Remove DOCTYPE declarations, comments, and XML declarations
+        html_content = re.sub(r'<!DOCTYPE[^>]*>', '', html_content, flags=re.IGNORECASE)
+        html_content = re.sub(r'<!--.*?-->', '', html_content, flags=re.DOTALL)
+        html_content = re.sub(r'<\?xml[^>]*\?>', '', html_content)
+        html_content = html_content.replace('&nbsp;', ' ')
+        
+        # Fix any escaped HTML syntax
+        if html_content.startswith('"') and html_content.endswith('"'):
+            html_content = html_content[1:-1]
+        
+        # Fix escaped quotes and other characters
+        html_content = html_content.replace('\\"', '"')
+        html_content = html_content.replace('\\n', '\n')
+        
+        return html_content
     
-    def _process_content(self, doc, parent_element):
-        """Process all relevant content within an element."""
-        # First pass: find all top-level elements that should be processed
-        top_elements = []
+    def _add_custom_styles(self, doc):
+        """Add custom styles to the document for better formatting."""
+        # Add heading styles
+        for i in range(1, 7):
+            style_name = f'CustomHeading{i}'
+            if style_name not in doc.styles:
+                style = doc.styles.add_style(style_name, 1)  # 1 = WD_STYLE_TYPE.PARAGRAPH
+                style.base_style = doc.styles['Heading' + str(i)]
+                style.font.name = 'Arial'
+                style.font.bold = True
+                style.font.size = Pt(20 - (i * 2))  # Decreasing size for each heading level
+                style.paragraph_format.space_before = Pt(12)
+                style.paragraph_format.space_after = Pt(6)
         
-        for element in parent_element.children:
-            # Skip NavigableString, doctype, and other irrelevant elements
-            if isinstance(element, NavigableString):
-                if element.strip():
-                    # Only add non-empty strings
-                    top_elements.append(element)
-            elif element.name and element.name not in ['!doctype', 'meta', 'title', 'style', 'script']:
-                top_elements.append(element)
+        # Add styles for special text blocks
+        if 'ArticleText' not in doc.styles:
+            style = doc.styles.add_style('ArticleText', 1)
+            style.base_style = doc.styles['Normal']
+            style.font.name = 'Arial'
+            style.font.size = Pt(11)
+            style.paragraph_format.first_line_indent = Inches(0.25)
+            style.paragraph_format.space_after = Pt(8)
         
-        # If no elements found, try to look deeper
-        if not top_elements:
-            top_elements = parent_element.find_all(
-                ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'table', 'section', 'article', 'div', 'ul', 'ol']
-            )
+        # Add styles for RTL text
+        if 'RTLParagraph' not in doc.styles:
+            style = doc.styles.add_style('RTLParagraph', 1)
+            style.base_style = doc.styles['Normal']
+            style.font.name = 'Arial'
+            style.font.size = Pt(11)
+            style.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            
+            # Set RTL text direction using XML
+            style_element = style._element
+            if hasattr(style_element, 'get_or_add_pPr'):
+                pPr = style_element.get_or_add_pPr()
+                bidi = OxmlElement('w:bidi')
+                bidi.set(qn('w:val'), "1")
+                pPr.append(bidi)
         
-        # Process each content element in order
-        for element in top_elements:
-            self._process_element(doc, element)
+        # Add List styles
+        if 'CustomBulletList' not in doc.styles:
+            style = doc.styles.add_style('CustomBulletList', 1)
+            style.base_style = doc.styles['List Bullet']
+            style.font.name = 'Arial'
+            style.font.size = Pt(11)
+        
+        if 'CustomNumberList' not in doc.styles:
+            style = doc.styles.add_style('CustomNumberList', 1)
+            style.base_style = doc.styles['List Number']
+            style.font.name = 'Arial'
+            style.font.size = Pt(11)
+    
+    def _process_content(self, doc, parent_element, css_content=None):
+        """Process all content within the parent element in order."""
+        # Find all direct children that need processing
+        for child in parent_element.children:
+            # Skip empty strings and irrelevant elements
+            if isinstance(child, NavigableString):
+                if child.strip():
+                    para = doc.add_paragraph()
+                    para.add_run(self._clean_text(child))
+            elif child.name and child.name not in ['meta', 'script', 'style', 'link']:
+                self._process_element(doc, child, css_content)
 
-    def _clean_text(self, text):
-        """Clean text by removing \n characters and extra whitespace."""
-        if text is None:
-            return ""
-        # Replace literal \n with space
-        text = text.replace('\\n', ' ')
-        # Replace multiple spaces with single space
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
-
-    def _process_element(self, doc, element):
-        """Process an HTML element based on its type."""
-        # Skip empty or None elements
+    def _process_element(self, doc, element, css_content=None):
+        """Process an HTML element based on its type with improved structure handling."""
         if element is None:
             return
             
         if isinstance(element, NavigableString):
             if element.strip():
-                # Clean the text before adding
-                doc.add_paragraph(self._clean_text(element))
+                para = doc.add_paragraph()
+                para.add_run(self._clean_text(element))
             return
             
         # Skip processing certain elements
-        if element.name in ['!doctype', 'meta', 'title', 'style', 'script']:
+        if element.name in ['meta', 'script', 'style', 'link']:
             return
-            
-        # Process element based on its type
-        if element.name in ['article', 'section', 'div']:
-            # Check if this is a section with a specific class
-            class_value = element.get('class', [])
-            if isinstance(class_value, list) and 'text-content' in class_value:
-                # For text-content sections, process as a unit
-                p = doc.add_paragraph()
-                self._process_text_content(p, element)
-            else:
-                # For container elements, process their children
-                for child in element.children:
-                    if isinstance(child, NavigableString):
-                        if child.strip():
-                            # Clean the text before adding
-                            doc.add_paragraph(self._clean_text(child))
-                    elif child.name:
-                        self._process_element(doc, child)
-                    
-        elif element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-            # Process headings - convert h1-h6 to appropriate heading levels
+        
+        # Get style information
+        inline_style = element.get('style', '')
+        css_styles = {}
+        
+        # Check for RTL text direction
+        is_rtl = False
+        if 'direction:rtl' in inline_style or 'direction: rtl' in inline_style:
+            is_rtl = True
+        
+        # Process based on element type
+        if element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            # Process headings with proper level
             level = int(element.name[1])
             heading = doc.add_heading(level=level)
-            self._process_text_content(heading, element)
+            self._process_text_content(heading, element, is_rtl=is_rtl)
             
+            # Apply custom styling
+            style_name = f'CustomHeading{level}'
+            if style_name in doc.styles:
+                heading.style = style_name
+                
         elif element.name == 'p':
             # Process paragraphs
             para = doc.add_paragraph()
-            self._process_text_content(para, element)
             
+            # Apply paragraph class-based styling
+            if element.get('class'):
+                classes = element.get('class')
+                if isinstance(classes, str):
+                    classes = [classes]
+                
+                if 'text-content' in classes:
+                    para.style = 'ArticleText'
+                    
+            # Set RTL style if needed
+            if is_rtl:
+                para.style = 'RTLParagraph'
+                
+            # Process paragraph content
+            self._process_text_content(para, element, is_rtl=is_rtl)
+            
+            # Apply alignment from style
+            self._apply_paragraph_alignment(para, element)
+            
+        elif element.name == 'article':
+            # Process articles - important for legal documents
+            # Articles typically contain heading + paragraphs
+            
+            # First find heading if present
+            article_heading = element.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+            if article_heading:
+                level = int(article_heading.name[1])
+                heading = doc.add_heading(level=level)
+                self._process_text_content(heading, article_heading)
+            
+            # Then process remaining content
+            for content in element.children:
+                if content != article_heading:  # Skip the heading we already processed
+                    if isinstance(content, NavigableString):
+                        if content.strip():
+                            para = doc.add_paragraph()
+                            para.add_run(self._clean_text(content))
+                    elif content.name:
+                        self._process_element(doc, content, css_content)
+        
+        elif element.name == 'section':
+            # Process sections similar to articles
+            section_heading = element.find(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+            if section_heading:
+                level = int(section_heading.name[1])
+                heading = doc.add_heading(level=level)
+                self._process_text_content(heading, section_heading)
+            
+            # Process section content
+            for content in element.children:
+                if content != section_heading:
+                    if isinstance(content, NavigableString):
+                        if content.strip():
+                            para = doc.add_paragraph()
+                            para.add_run(self._clean_text(content))
+                    elif content.name:
+                        self._process_element(doc, content, css_content)
+                        
         elif element.name == 'table':
             # Process tables
-            self._process_table(doc, element)
+            self._process_table(doc, element, is_rtl=is_rtl)
             
         elif element.name in ['ul', 'ol']:
             # Process lists
-            self._process_list(doc, element)
+            self._process_list(doc, element, is_rtl=is_rtl)
             
-        elif element.name == 'footer':
-            # Process footers
-            for child in element.children:
-                if isinstance(child, NavigableString):
-                    if child.strip():
-                        # Clean the text before adding
-                        para = doc.add_paragraph(self._clean_text(child))
-                        para.style = 'Normal'
-                elif child.name:
-                    if child.name == 'p':
-                        para = doc.add_paragraph()
-                        self._process_text_content(para, child)
+        elif element.name == 'div':
+            # Process div containers
+            
+            # Check if this is a section with a specific class
+            class_value = element.get('class', [])
+            if isinstance(class_value, str):
+                class_value = [class_value]
                 
-        elif element.name == 'header':
-            # Process headers
-            for child in element.children:
-                if isinstance(child, NavigableString):
-                    if child.strip():
-                        # Clean the text before adding
-                        para = doc.add_paragraph(self._clean_text(child))
-                        para.style = 'Header'
-                elif child.name:
-                    if child.name == 'p':
-                        para = doc.add_paragraph()
-                        self._process_text_content(para, child)
-                        
-        elif element.name == 'a':
-            # For standalone links, add as paragraph
-            para = doc.add_paragraph()
-            self._process_text_content(para, element)
-            
+            if 'text-content' in class_value:
+                # For text-content sections, process as a paragraph
+                p = doc.add_paragraph()
+                if is_rtl:
+                    p.style = 'RTLParagraph'
+                self._process_text_content(p, element, is_rtl=is_rtl)
+            else:
+                # Process child elements
+                self._process_content(doc, element, css_content)
+                
         elif element.name == 'br':
-            # Add line break
+            # In standalone context, add a paragraph
             doc.add_paragraph()
             
-        elif element.name in ['span', 'strong', 'em', 'b', 'i', 'u']:
+        elif element.name in ['span', 'strong', 'em', 'b', 'i', 'u', 's', 'strike']:
             # For inline elements that appear at top level, wrap in paragraph
             para = doc.add_paragraph()
-            self._process_text_content(para, element)
+            if is_rtl:
+                para.style = 'RTLParagraph'
+            self._process_text_content(para, element, is_rtl=is_rtl)
+            
+        elif element.name == 'a':
+            # Handle hyperlinks
+            para = doc.add_paragraph()
+            if is_rtl:
+                para.style = 'RTLParagraph'
+            self._process_text_content(para, element, is_rtl=is_rtl)
+            
+        elif element.name in ['pre', 'code']:
+            # Handle code blocks
+            para = doc.add_paragraph()
+            run = para.add_run(self._clean_text(element.get_text()))
+            run.font.name = 'Courier New'
+            run.font.size = Pt(9)
+            
+        else:
+            # For other elements, try to process children
+            if any(child.name for child in element.children if isinstance(child, Tag)):
+                self._process_content(doc, element, css_content)
+            else:
+                # Element only has text content
+                text = self._clean_text(element.get_text())
+                if text:
+                    para = doc.add_paragraph()
+                    para.add_run(text)
 
-    def _process_text_content(self, paragraph, element):
-        """Process the text content of an element including formatting."""
+    def _clean_text(self, text):
+        """Clean and normalize text content."""
+        if text is None:
+            return ""
+        
+        # Replace literal line breaks with spaces
+        text = text.replace('\\n', ' ')
+        
+        # Replace multiple spaces with single space
+        text = re.sub(r'\s+', ' ', text)
+        
+        return text.strip()
+
+    def _process_text_content(self, paragraph, element, is_rtl=False):
+        """Process the text content of an element including inline formatting."""
         if element is None:
             return
             
         if isinstance(element, NavigableString):
-            # Clean the text before adding
+            # Clean text and add as run
             text = self._clean_text(element)
             if text:
-                paragraph.add_run(text)
+                run = paragraph.add_run(text)
+                if is_rtl:
+                    self._set_run_rtl(run)
             return
         
-        # Check if the element has a text node directly
+        # Check if element has direct text
         if element.string and element.string.strip():
-            # Clean the text before adding
-            run = paragraph.add_run(self._clean_text(element.string))
+            text = self._clean_text(element.string)
+            run = paragraph.add_run(text)
+            if is_rtl:
+                self._set_run_rtl(run)
             self._apply_text_formatting(run, element)
             return
             
-        # Process children
+        # Process all children
         for child in element.children:
             if isinstance(child, NavigableString):
-                # Clean the text before adding
                 text = self._clean_text(child)
                 if text:
                     run = paragraph.add_run(text)
-                    self._apply_text_formatting(run, element)
+                    if is_rtl:
+                        self._set_run_rtl(run)
+                    self._apply_text_formatting(run, element)  # Apply parent formatting to text
             elif child.name == 'br':
-                paragraph.add_run().add_break()
+                # Handle line breaks properly
+                run = paragraph.add_run()
+                run.add_break(WD_BREAK.LINE)
             elif child.name in ['strong', 'b']:
-                # Clean the text before adding
-                run = paragraph.add_run(self._clean_text(child.get_text()))
+                # Bold text
+                text = self._clean_text(child.get_text())
+                run = paragraph.add_run(text)
                 run.bold = True
+                if is_rtl:
+                    self._set_run_rtl(run)
                 self._apply_text_formatting(run, child)
             elif child.name in ['em', 'i']:
-                # Clean the text before adding
-                run = paragraph.add_run(self._clean_text(child.get_text()))
+                # Italic text
+                text = self._clean_text(child.get_text())
+                run = paragraph.add_run(text)
                 run.italic = True
+                if is_rtl:
+                    self._set_run_rtl(run)
                 self._apply_text_formatting(run, child)
             elif child.name == 'u':
-                # Clean the text before adding
-                run = paragraph.add_run(self._clean_text(child.get_text()))
+                # Underlined text
+                text = self._clean_text(child.get_text())
+                run = paragraph.add_run(text)
                 run.underline = True
+                if is_rtl:
+                    self._set_run_rtl(run)
+                self._apply_text_formatting(run, child)
+            elif child.name in ['s', 'strike', 'del']:
+                # Strikethrough text
+                text = self._clean_text(child.get_text())
+                run = paragraph.add_run(text)
+                run.font.strike = True
+                if is_rtl:
+                    self._set_run_rtl(run)
                 self._apply_text_formatting(run, child)
             elif child.name == 'a':
-                # Clean the text before adding
+                # Hyperlinks
                 text = self._clean_text(child.get_text())
+                href = child.get('href', '')
+                
                 if text:
-                    run = paragraph.add_run(text)
-                    run.underline = True
-                    run.font.color.rgb = RGBColor(0, 0, 255)
-                    # Store href as run property rather than adding a comment
-                    href = child.get('href')
-                    if href:
-                        # Instead of using add_comment(), store as a custom property
-                        # or simply skip since we can't directly add hyperlinks
-                        pass
+                    # Add hyperlink if possible, or styled text if not
+                    try:
+                        self._add_hyperlink(paragraph, text, href or "#")
+                    except:
+                        run = paragraph.add_run(text)
+                        run.underline = True
+                        run.font.color.rgb = RGBColor(0, 0, 255)
+                        if is_rtl:
+                            self._set_run_rtl(run)
             elif child.name == 'span':
-                # Process span with potential inline styles
-                # Clean the text before adding
-                run = paragraph.add_run(self._clean_text(child.get_text()))
-                self._apply_text_formatting(run, child)
+                # Process spans with style info
+                self._process_text_content(paragraph, child, is_rtl)
             else:
-                # Recursively process other elements
-                self._process_text_content(paragraph, child)
+                # Process other elements recursively
+                self._process_text_content(paragraph, child, is_rtl)
+
+    def _set_run_rtl(self, run):
+        """Set RTL text direction for a run."""
+        try:
+            rPr = run._element.get_or_add_rPr()
+            rtl = OxmlElement('w:rtl')
+            rtl.set(qn('w:val'), "1")
+            rPr.append(rtl)
+        except Exception as e:
+            logger.warning(f"Failed to set RTL: {str(e)}")
+
+    def _apply_paragraph_alignment(self, paragraph, element):
+        """Apply text alignment to a paragraph based on HTML attributes and styles."""
+        # Check for alignment in style attribute
+        style = element.get('style', '')
+        align_match = re.search(r'text-align\s*:\s*([^;]+)', style)
+        
+        # Check direct alignment attribute
+        align_attr = element.get('align')
+        
+        # Set alignment based on found values
+        if align_match:
+            align_value = align_match.group(1).strip().lower()
+            if align_value == 'center':
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            elif align_value == 'right':
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            elif align_value == 'justify':
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            elif align_value == 'left':
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        elif align_attr:
+            align_value = align_attr.lower()
+            if align_value == 'center':
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            elif align_value == 'right':
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            elif align_value == 'justify':
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            elif align_value == 'left':
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     def _apply_text_formatting(self, run, element):
-        """Apply text formatting based on element attributes and styles."""
-        # Check direct attributes
-        if element.name in ['strong', 'b'] or element.get('style', '').find('font-weight:') >= 0:
+        """Apply text formatting to a run based on HTML style attributes."""
+        # Apply base formatting from element name
+        if element.name in ['strong', 'b']:
             run.bold = True
-        if element.name in ['em', 'i'] or element.get('style', '').find('font-style:italic') >= 0:
+        if element.name in ['em', 'i']:
             run.italic = True
-        if element.name == 'u' or element.get('style', '').find('text-decoration:underline') >= 0:
+        if element.name == 'u':
             run.underline = True
+        if element.name in ['s', 'strike', 'del']:
+            run.font.strike = True
+        if element.name == 'sub':
+            run.font.subscript = True
+        if element.name == 'sup':
+            run.font.superscript = True
             
-        # Check style attribute for more complex formatting
+        # Apply style attribute formatting
         style = element.get('style', '')
         
+        # Font weight
+        if 'font-weight:' in style:
+            weight_match = re.search(r'font-weight\s*:\s*([^;]+)', style)
+            if weight_match:
+                weight = weight_match.group(1).strip().lower()
+                if weight in ['bold', '700', '800', '900']:
+                    run.bold = True
+        
+        # Font style
+        if 'font-style:' in style:
+            style_match = re.search(r'font-style\s*:\s*([^;]+)', style)
+            if style_match:
+                font_style = style_match.group(1).strip().lower()
+                if font_style == 'italic':
+                    run.italic = True
+        
+        # Text decoration
+        if 'text-decoration:' in style:
+            decoration_match = re.search(r'text-decoration\s*:\s*([^;]+)', style)
+            if decoration_match:
+                decoration = decoration_match.group(1).strip().lower()
+                if 'underline' in decoration:
+                    run.underline = True
+                if 'line-through' in decoration:
+                    run.font.strike = True
+        
         # Font color
-        color_match = re.search(r'color\s*:\s*#?([0-9a-fA-F]{6})', style)
+        color_match = re.search(r'color\s*:\s*([^;]+)', style)
         if color_match:
-            hex_color = color_match.group(1)
-            r = int(hex_color[0:2], 16)
-            g = int(hex_color[2:4], 16)
-            b = int(hex_color[4:6], 16)
-            run.font.color.rgb = RGBColor(r, g, b)
-            
+            color_value = color_match.group(1).strip().lower()
+            try:
+                # Handle hex colors
+                if color_value.startswith('#'):
+                    hex_color = color_value.lstrip('#')
+                    if len(hex_color) == 6:
+                        r = int(hex_color[0:2], 16)
+                        g = int(hex_color[2:4], 16)
+                        b = int(hex_color[4:6], 16)
+                        run.font.color.rgb = RGBColor(r, g, b)
+                # Handle basic named colors
+                elif color_value in ['black', 'white', 'red', 'green', 'blue', 'yellow']:
+                    if color_value == 'black':
+                        run.font.color.rgb = RGBColor(0, 0, 0)
+                    elif color_value == 'white':
+                        run.font.color.rgb = RGBColor(255, 255, 255)
+                    elif color_value == 'red':
+                        run.font.color.rgb = RGBColor(255, 0, 0)
+                    elif color_value == 'green':
+                        run.font.color.rgb = RGBColor(0, 128, 0)
+                    elif color_value == 'blue':
+                        run.font.color.rgb = RGBColor(0, 0, 255)
+                    elif color_value == 'yellow':
+                        run.font.color.rgb = RGBColor(255, 255, 0)
+            except Exception as e:
+                logger.warning(f"Failed to set color: {str(e)}")
+        
         # Font size
-        size_match = re.search(r'font-size\s*:\s*(\d+)pt', style)
+        size_match = re.search(r'font-size\s*:\s*(\d+)(?:px|pt|em|rem)?', style)
         if size_match:
-            font_size = int(size_match.group(1))
-            run.font.size = Pt(font_size)
-            
+            try:
+                size_value = int(size_match.group(1))
+                if 'px' in style:
+                    # Convert pixels to points (approximate)
+                    size_value = int(size_value * 0.75)
+                run.font.size = Pt(size_value)
+            except Exception as e:
+                logger.warning(f"Failed to set font size: {str(e)}")
+        
         # Font family
         font_match = re.search(r'font-family\s*:\s*([^;]+)', style)
         if font_match:
-            font_family = font_match.group(1).strip().split(',')[0].strip("'\"")
-            run.font.name = font_family
+            try:
+                font_value = font_match.group(1).strip()
+                # Extract first font in the list and remove quotes
+                font_name = re.sub(r'^[\'"]|[\'"]$', '', font_value.split(',')[0].strip())
+                run.font.name = font_name
+            except Exception as e:
+                logger.warning(f"Failed to set font family: {str(e)}")
 
-    def _process_table(self, doc, table_elem):
-        """Process HTML tables with proper structure preservation."""
-        # Extract table header and body rows
+    def _add_hyperlink(self, paragraph, text, url):
+        """Add a hyperlink to a paragraph."""
+        try:
+            part = paragraph.part
+            r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+            
+            # Create hyperlink element
+            hyperlink = OxmlElement('w:hyperlink')
+            hyperlink.set(qn('r:id'), r_id)
+            
+            # Create run
+            new_run = OxmlElement('w:r')
+            rPr = OxmlElement('w:rPr')
+            
+            # Add style (blue and underlined)
+            color = OxmlElement('w:color')
+            color.set(qn('w:val'), '0000FF')
+            rPr.append(color)
+            
+            underline = OxmlElement('w:u')
+            underline.set(qn('w:val'), 'single')
+            rPr.append(underline)
+            
+            new_run.append(rPr)
+            
+            # Add text
+            t = OxmlElement('w:t')
+            t.text = text
+            new_run.append(t)
+            
+            # Add run to hyperlink
+            hyperlink.append(new_run)
+            
+            # Add hyperlink to paragraph
+            paragraph._p.append(hyperlink)
+            
+            return hyperlink
+        except Exception as e:
+            logger.warning(f"Failed to add hyperlink: {str(e)}")
+            # Fallback to styled text
+            run = paragraph.add_run(text)
+            run.font.color.rgb = RGBColor(0, 0, 255)
+            run.underline = True
+            return run
+
+    def _process_table(self, doc, table_elem, css_content=None, is_rtl=False):
+        """
+        Process HTML tables with comprehensive structure and formatting preservation.
+        Fixed to avoid using get_or_add_tblPr directly.
+        """
+        # Extract header and body rows
         thead = table_elem.find('thead')
         tbody = table_elem.find('tbody')
+        tfoot = table_elem.find('tfoot')
         
+        # Get all rows in correct order
         rows = []
+        header_rows = []
+        footer_rows = []
+        
         if thead:
-            rows.extend(thead.find_all('tr'))
+            header_rows = thead.find_all('tr')
+            rows.extend(header_rows)
         if tbody:
             rows.extend(tbody.find_all('tr'))
+        if tfoot:
+            footer_rows = tfoot.find_all('tr')
+            rows.extend(footer_rows)
         
-        # If there's no explicit thead or tbody, get all rows directly
+        # If no explicit structure, get all rows directly
         if not rows:
             rows = table_elem.find_all('tr')
         
         if not rows:
             return
             
-        # Determine table dimensions
-        max_cols = 0
+        # Analyze table dimensions accounting for rowspan/colspan
+        col_counts = []
         for row in rows:
             cells = row.find_all(['td', 'th'])
-            max_cols = max(max_cols, len(cells))
-            
+            col_count = 0
+            for cell in cells:
+                colspan = int(cell.get('colspan', 1))
+                col_count += colspan
+            col_counts.append(col_count)
+        
+        # Determine max columns
+        max_cols = max(col_counts) if col_counts else 0
         if max_cols == 0:
             return
-            
-        # Create the table
+        
+        # Create table
         table = doc.add_table(rows=len(rows), cols=max_cols)
         table.style = 'Table Grid'
         
+        # Helper to create cell map for tracing merged areas
+        cell_map = [[None for _ in range(max_cols)] for _ in range(len(rows))]
+        
+        # Process table styles
+        table_style = table_elem.get('style', '')
+        table_class = table_elem.get('class', [])
+        if isinstance(table_class, str):
+            table_class = [table_class]
+        
+        # Apply table width if specified - Fixed approach
+        width_match = re.search(r'width\s*:\s*(\d+)([%a-z]+)', table_style)
+        if width_match:
+            width_val = float(width_match.group(1))
+            width_unit = width_match.group(2)
+            
+            if width_unit == '%':
+                # Apply percentage of page width
+                width_pct = min(100, width_val) / 100
+                
+                # Use proper XML approach to set table width
+                tbl = table._tbl
+                # Check if tblPr exists, create if not
+                tblPr = None
+                for child in tbl:
+                    if child.tag.endswith('tblPr'):
+                        tblPr = child
+                        break
+                
+                if tblPr is None:
+                    tblPr = OxmlElement('w:tblPr')
+                    tbl.insert(0, tblPr)
+                
+                # Create or find tblW element
+                tblW = None
+                for child in tblPr:
+                    if child.tag.endswith('tblW'):
+                        tblW = child
+                        break
+                
+                if tblW is None:
+                    tblW = OxmlElement('w:tblW')
+                    tblPr.append(tblW)
+                
+                # Set width attributes
+                tblW.set(qn('w:w'), str(int(5000 * width_pct)))  # 5000 = 100%
+                tblW.set(qn('w:type'), 'pct')
+        
+        # Apply table alignment - Fixed approach
+        if ('margin-left:auto' in table_style and 'margin-right:auto' in table_style) or 'data-table' in table_class:
+            # Center alignment
+            tbl = table._tbl
+            
+            # Check if tblPr exists, create if not
+            tblPr = None
+            for child in tbl:
+                if child.tag.endswith('tblPr'):
+                    tblPr = child
+                    break
+            
+            if tblPr is None:
+                tblPr = OxmlElement('w:tblPr')
+                tbl.insert(0, tblPr)
+            
+            # Create or find jc element
+            jc = None
+            for child in tblPr:
+                if child.tag.endswith('jc'):
+                    jc = child
+                    break
+            
+            if jc is None:
+                jc = OxmlElement('w:jc')
+                tblPr.append(jc)
+            
+            # Set alignment value
+            jc.set(qn('w:val'), 'center')
+        
         # Process each row
-        for i, row in enumerate(rows):
+        for row_idx, row in enumerate(rows):
             cells = row.find_all(['td', 'th'])
             
-            # Handle case with fewer cells than max_cols
-            if len(cells) < max_cols:
-                # Fill remaining cells with empty content
-                for j in range(len(cells), max_cols):
-                    table.cell(i, j).text = ""
+            # Track current column position accounting for merged cells
+            current_col = 0
             
-            # Process each cell
-            for j, cell in enumerate(cells):
-                if j < max_cols:
-                    try:
-                        table_cell = table.cell(i, j)
-                        
-                        # Clear the default paragraph
-                        if table_cell.paragraphs:
-                            p = table_cell.paragraphs[0]
-                            # Remove any existing content
-                            for run in p.runs:
-                                p._element.remove(run._element)
-                        else:
-                            p = table_cell.add_paragraph()
-                        
-                        # Process cell text with special handling for our patterns
-                        self._process_table_cell_content(p, cell, j)
-                        
-                        # Check for colspan
-                        colspan = int(cell.get('colspan', 1))
-                        if colspan > 1 and j + colspan - 1 < max_cols:
-                            # Merge cells horizontally
-                            for col in range(1, colspan):
-                                if j + col < max_cols:
-                                    target_cell = table.cell(i, j + col)
-                                    # Merge target cell into the current cell
-                                    table_cell.merge(target_cell)
-                        
-                        # Apply cell formatting
-                        if cell.name == 'th':
-                            # Make header cells bold
-                            for paragraph in table_cell.paragraphs:
-                                for run in paragraph.runs:
-                                    run.bold = True
-                            self._set_cell_shading(table_cell, 'f2f2f2')  # Light gray for headers
+            # Process cells in this row
+            for cell_idx, cell in enumerate(cells):
+                # Skip positions already occupied by row-spanning cells from previous rows
+                while current_col < max_cols and cell_map[row_idx][current_col] is not None:
+                    current_col += 1
+                
+                # If we've run out of columns, break
+                if current_col >= max_cols:
+                    break
+                
+                try:
+                    # Get colspan and rowspan
+                    colspan = int(cell.get('colspan', 1))
+                    rowspan = int(cell.get('rowspan', 1))
+                    
+                    # Get the cell from the Word table
+                    table_cell = table.cell(row_idx, current_col)
+                    
+                    # Mark this cell and merged region in the cell map
+                    for r in range(row_idx, min(row_idx + rowspan, len(rows))):
+                        for c in range(current_col, min(current_col + colspan, max_cols)):
+                            if r == row_idx and c == current_col:
+                                cell_map[r][c] = "ORIGIN"  # This is the top-left cell
+                            else:
+                                cell_map[r][c] = "MERGED"  # This position is part of a merged cell
+                    
+                    # Clear existing content in the cell
+                    for paragraph in table_cell.paragraphs:
+                        if paragraph.runs:
+                            for run in paragraph.runs:
+                                run._element.getparent().remove(run._element)
+                    
+                    # Process cell style attributes
+                    cell_style = cell.get('style', '')
+                    
+                    # Process cell content - key improvement for handling line breaks
+                    cell_content = []
+                    
+                    # Check if cell has simple text or complex content
+                    if len(list(cell.children)) == 1 and isinstance(next(cell.children), NavigableString):
+                        # Single text node
+                        cell_text = self._clean_text(cell.string)
+                        if cell_text:
+                            para = table_cell.paragraphs[0] if table_cell.paragraphs else table_cell.add_paragraph()
+                            para.add_run(cell_text)
+                    else:
+                        # Complex content - may contain line breaks, formatting, etc.
+                        # First check if content should be split on <br/> tags
+                        if cell.find('br'):
+                            # Handle <br/> tags by creating multiple paragraphs
+                            contents = []
+                            current_content = ""
                             
-                        # Handle alignment
-                        align = cell.get('align')
-                        style = cell.get('style', '')
-                        if align or 'text-align' in style:
-                            for paragraph in table_cell.paragraphs:
-                                if align == 'center' or 'text-align:center' in style:
-                                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                                elif align == 'right' or 'text-align:right' in style:
-                                    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                                elif align == 'left' or 'text-align:left' in style:
-                                    paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-                    except Exception as e:
-                        logger.warning(f"Error processing table cell: {str(e)}")
+                            for item in cell.contents:
+                                if isinstance(item, NavigableString):
+                                    current_content += str(item)
+                                elif item.name == 'br':
+                                    contents.append(current_content.strip())
+                                    current_content = ""
+                                else:
+                                    current_content += str(item)
+                            
+                            # Add any remaining content
+                            if current_content.strip():
+                                contents.append(current_content.strip())
+                            
+                            # Create a paragraph for each content piece
+                            for i, content in enumerate(contents):
+                                if i == 0 and table_cell.paragraphs:
+                                    para = table_cell.paragraphs[0]
+                                else:
+                                    para = table_cell.add_paragraph()
+                                
+                                # Handle the possibility of HTML in content
+                                try:
+                                    soup = BeautifulSoup(f"<div>{content}</div>", 'html.parser')
+                                    self._process_text_content(para, soup.div, is_rtl=is_rtl)
+                                except:
+                                    para.add_run(content)
+                        else:
+                            # Single paragraph but may have formatting
+                            para = table_cell.paragraphs[0] if table_cell.paragraphs else table_cell.add_paragraph()
+                            self._process_text_content(para, cell, is_rtl=is_rtl)
+                    
+                    # Apply cell formatting
+                    
+                    # Handle cell background color
+                    bg_color_match = re.search(r'background-color\s*:\s*([^;]+)', cell_style)
+                    if bg_color_match:
+                        color_val = bg_color_match.group(1).strip()
+                        # Extract hex color
+                        if color_val.startswith('#'):
+                            color_hex = color_val.lstrip('#')
+                            self._set_cell_shading(table_cell, color_hex)
+                        elif color_val.startswith('rgb'):
+                            # Handle rgb() format
+                            rgb_match = re.search(r'rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)', color_val)
+                            if rgb_match:
+                                r = int(rgb_match.group(1))
+                                g = int(rgb_match.group(2))
+                                b = int(rgb_match.group(3))
+                                color_hex = f"{r:02x}{g:02x}{b:02x}"
+                                self._set_cell_shading(table_cell, color_hex)
+                    
+                    # Special formatting for header cells
+                    if cell.name == 'th':
+                        # Make header cells bold
+                        for paragraph in table_cell.paragraphs:
+                            for run in paragraph.runs:
+                                run.bold = True
+                        
+                        # Add light gray background if not already set
+                        if not bg_color_match:
+                            self._set_cell_shading(table_cell, 'f2f2f2')
+                    
+                    # Apply text alignment
+                    align_match = re.search(r'text-align\s*:\s*([^;]+)', cell_style)
+                    align_attr = cell.get('align')
+                    
+                    if align_match or align_attr:
+                        align_value = None
+                        if align_match:
+                            align_value = align_match.group(1).strip().lower()
+                        elif align_attr:
+                            align_value = align_attr.lower()
+                        
+                        for paragraph in table_cell.paragraphs:
+                            if align_value == 'center':
+                                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            elif align_value == 'right':
+                                paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                            elif align_value == 'justify':
+                                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    
+                    # Apply vertical alignment
+                    valign_match = re.search(r'vertical-align\s*:\s*([^;]+)', cell_style)
+                    valign_attr = cell.get('valign')
+                    
+                    if valign_match or valign_attr:
+                        valign_value = None
+                        if valign_match:
+                            valign_value = valign_match.group(1).strip().lower()
+                        elif valign_attr:
+                            valign_value = valign_attr.lower()
+                        
+                        if valign_value == 'top':
+                            table_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+                        elif valign_value in ['middle', 'center']:
+                            table_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                        elif valign_value == 'bottom':
+                            table_cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.BOTTOM
+                    
+                    # Apply cell spanning
+                    if colspan > 1:
+                        # Merge cells horizontally
+                        for i in range(1, colspan):
+                            if current_col + i < max_cols:
+                                try:
+                                    table_cell.merge(table.cell(row_idx, current_col + i))
+                                except Exception as e:
+                                    logger.warning(f"Failed to merge cells horizontally: {str(e)}")
+                    
+                    if rowspan > 1:
+                        # Merge cells vertically
+                        for i in range(1, rowspan):
+                            if row_idx + i < len(rows):
+                                try:
+                                    target_cell = table.cell(row_idx + i, current_col)
+                                    # Only merge if not already part of another merged cell
+                                    if cell_map[row_idx + i][current_col] == "MERGED":
+                                        table_cell.merge(target_cell)
+                                except Exception as e:
+                                    logger.warning(f"Failed to merge cells vertically: {str(e)}")
+                    
+                    # Update current column position
+                    current_col += colspan
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing table cell: {str(e)}")
+                    current_col += 1
         
         return table
 
-    def _process_table_cell_content(self, paragraph, cell, column_index):
-        """
-        Process a table cell with special handling for service tariff tables.
-        
-        Args:
-            paragraph: The paragraph to add content to
-            cell: The HTML cell element
-            column_index: The column index (0-based) to help identify special columns
-        """
-        # Get the cell text
-        cell_text = self._clean_text(cell.get_text())
-        
-        # Skip empty cells
-        if not cell_text:
-            return
-        
-        # Check if this is a special column that might need line break handling
-        if column_index == 2:  # "Number of Objects" column (0-based index)
-            # Apply special formatting for "minutes" patterns
-            if 'minutes' in cell_text and 'Every additional' in cell_text:
-                parts = re.split(r'(Every additional)', cell_text, 1)
-                if len(parts) == 3:
-                    # Add first part
-                    paragraph.add_run(parts[0].strip())
-                    # Add line break
-                    paragraph.add_run().add_break()
-                    # Add second part with "Every additional"
-                    paragraph.add_run(parts[1] + ' ' + parts[2].strip())
-                    return
-        
-        elif column_index == 3:  # "Service Tariff" column (0-based index)
-            # Check for special number patterns like "5010" that should be "50\n10"
-            if re.match(r'^\d+$', cell_text) and len(cell_text) >= 3:
-                # Pattern 1: Values ending with "10" or "20" (e.g., 5010 → 50\n10)
-                if len(cell_text) >= 4 and (cell_text.endswith('10') or cell_text.endswith('20')):
-                    first_part = cell_text[:-2]
-                    second_part = cell_text[-2:]
-                    paragraph.add_run(first_part)
-                    paragraph.add_run().add_break()
-                    paragraph.add_run(second_part)
-                    return
-                
-                # Pattern 2: Values ending with "5" (e.g., 505 → 50\n5)
-                elif len(cell_text) >= 3 and cell_text.endswith('5'):
-                    first_part = cell_text[:-1]
-                    second_part = cell_text[-1:]
-                    paragraph.add_run(first_part)
-                    paragraph.add_run().add_break()
-                    paragraph.add_run(second_part)
-                    return
-        
-        # Default handling for all other cells or if no special pattern matched
-        self._process_text_content(paragraph, cell)
-
     def _set_cell_shading(self, cell, color_hex):
         """Set the background shading of a table cell."""
-        cell_properties = cell._element.tcPr
-        if cell_properties is None:
-            cell_properties = OxmlElement('w:tcPr')
-            cell._element.append(cell_properties)
-        
-        shading = OxmlElement('w:shd')
-        shading.set(qn('w:fill'), color_hex)
-        cell_properties.append(shading)
+        try:
+            tcPr = cell._tc.get_or_add_tcPr()
+            shading = OxmlElement('w:shd')
+            shading.set(qn('w:fill'), color_hex)
+            shading.set(qn('w:val'), 'clear')
+            shading.set(qn('w:color'), 'auto')
+            tcPr.append(shading)
+        except Exception as e:
+            logger.warning(f"Failed to set cell shading: {str(e)}")
 
-    def _process_list(self, doc, list_elem):
-        """Process HTML lists maintaining proper structure."""
+    def _process_list(self, doc, list_elem, is_rtl=False):
+        """
+        Process HTML lists with proper nesting and formatting.
+        Improved to handle bullet and numbered lists correctly.
+        """
         is_ordered = list_elem.name == 'ol'
         items = list_elem.find_all('li', recursive=False)
         
-        for i, item in enumerate(items):
-            # Determine list style based on type
-            style_name = 'List Number' if is_ordered else 'List Bullet'
+        # Get list style attributes
+        list_style = list_elem.get('style', '')
+        list_class = list_elem.get('class', [])
+        if isinstance(list_class, str):
+            list_class = [list_class]
+        
+        # Determine list level by counting parent lists
+        level = 0
+        parent = list_elem.parent
+        while parent:
+            if parent.name in ['ol', 'ul']:
+                level += 1
+            parent = parent.parent
+        
+        # Process list items
+        for item in items:
+            # Choose appropriate list style based on type and nesting
+            if is_ordered:
+                style_name = 'List Number'
+            else:
+                style_name = 'List Bullet'
             
-            # Create paragraph with list style
+            # Create a paragraph with list style
             p = doc.add_paragraph(style=style_name)
             
-            # Process content
-            self._process_text_content(p, item)
+            # Apply RTL if needed
+            if is_rtl:
+                p._p.get_or_add_pPr().append(OxmlElement('w:bidi'))
+            
+            # Set the list level based on nesting
+            if level > 0:
+                p._p.get_or_add_pPr().get_or_add_numPr().get_or_add_ilvl().val = level
+            
+            # Process the content of the list item
+            self._process_text_content(p, item, is_rtl=is_rtl)
             
             # Handle nested lists
-            for nested_list in item.find_all(['ul', 'ol'], recursive=False):
-                # Increase indentation for nested lists
-                self._process_list(doc, nested_list)
+            nested_lists = item.find_all(['ul', 'ol'], recursive=False)
+            for nested_list in nested_lists:
+                self._process_list(doc, nested_list, is_rtl=is_rtl)
+
+    def _add_headers_and_footers(self, doc, soup):
+        """Add headers and footers to the document if present in HTML."""
+        # Find header and footer elements
+        header_elem = soup.find('header')
+        footer_elem = soup.find('footer')
+        
+        # Process header
+        if header_elem:
+            for section in doc.sections:
+                header = section.header
+                header_para = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+                self._process_text_content(header_para, header_elem)
+                
+                # Right-align the header text by default
+                header_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        
+        # Process footer
+        if footer_elem:
+            for section in doc.sections:
+                footer = section.footer
+                footer_para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+                self._process_text_content(footer_para, footer_elem)
+                
+                # Center-align the footer text by default
+                footer_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     def get_base64_docx(self, docx_data: bytes) -> str:
         """Convert DOCX data to a base64 string."""
