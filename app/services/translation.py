@@ -843,6 +843,10 @@ Here is the HTML to translate:
                             # Replace the comment with the preserved content
                             comment.replace_with(preserved_content)
                 translated_text = str(soup)
+
+                # Additional cleanup for any remaining preservation tags using regex
+                translated_text = re.sub(r'<!--PRESERVE-->', '', translated_text)
+                translated_text = re.sub(r'<!--/PRESERVE-->', '', translated_text)
                 
                 # Verify that the HTML structure is preserved
                 # If the original had a div.document or div.page, the translated version should too
