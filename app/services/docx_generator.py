@@ -61,7 +61,14 @@ class DocxGeneratorService:
             html_content = self._clean_html_content(html_content)
             
             # Parse HTML
+            # After parsing HTML
             soup = BeautifulSoup(html_content, 'html.parser')
+            document_div = soup.find('div', class_='document')
+            if document_div:
+                logger.debug("Document div found with content length: %d", len(document_div.get_text()))
+            else:
+                logger.warning("Document div not found in HTML content! Content starts with: %s", 
+                            html_content[:100] if html_content else "empty")
             
             # Remove meta and script tags
             for tag in soup.find_all(['meta', 'script']):
@@ -339,22 +346,23 @@ class DocxGeneratorService:
 
     def _clean_html_content(self, html_content):
         """Clean up HTML content for processing."""
+        # If the content is wrapped in quotes (from JSON), remove them
+        if html_content and html_content.startswith('"') and html_content.endswith('"'):
+            html_content = html_content[1:-1]
+        
+        # Unescape escaped quotes (from JSON)
+        html_content = html_content.replace('\\"', '"')
+        
+        # Replace escaped newlines with actual newlines
+        html_content = html_content.replace('\\n', '\n')
+        
         # Remove DOCTYPE declarations, comments, and XML declarations
         html_content = re.sub(r'<!DOCTYPE[^>]*>', '', html_content, flags=re.IGNORECASE)
         html_content = re.sub(r'<!--.*?-->', '', html_content, flags=re.DOTALL)
         html_content = re.sub(r'<\?xml[^>]*\?>', '', html_content)
         html_content = html_content.replace('&nbsp;', ' ')
         
-        # Fix any escaped HTML syntax
-        if html_content.startswith('"') and html_content.endswith('"'):
-            html_content = html_content[1:-1]
-        
-        # Fix escaped quotes and other characters
-        html_content = html_content.replace('\\"', '"')
-        html_content = html_content.replace('\\n', '\n')
-        
         return html_content
-    
 
     def _add_custom_styles(self, doc):
         """Add custom styles to the document for better formatting."""
