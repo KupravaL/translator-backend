@@ -48,7 +48,7 @@ class TranslationService:
         self.language_config = {
             # Default settings for all languages
             "default": {
-                "temperature": 0.15,
+                "temperature": 0,
                 "top_p": 0.97,
                 "top_k": 45,
                 "max_chunk_size": 9000,
