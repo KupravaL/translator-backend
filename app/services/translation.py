@@ -36,8 +36,8 @@ class TranslationService:
         if settings.GOOGLE_API_KEY:
             genai.configure(api_key=settings.GOOGLE_API_KEY)
             # Use Gemini-2.0-flash for content extraction and translation
-            self.extraction_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
-            self.translation_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
+            self.extraction_model = genai.GenerativeModel(model_name="gemini-2.5-pro-exp-03-25")
+            self.translation_model = genai.GenerativeModel(model_name="gemini-2.5-pro-exp-03-25")
             logger.info("Initialized Google Gemini models for extraction and translation")
         else:
             self.extraction_model = None
