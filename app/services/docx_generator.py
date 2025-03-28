@@ -371,7 +371,8 @@ class DocxGeneratorService:
             style_name = f'CustomHeading{i}'
             if style_name not in doc.styles:
                 style = doc.styles.add_style(style_name, 1)  # 1 = WD_STYLE_TYPE.PARAGRAPH
-                style.base_style = doc.styles['Heading' + str(i)]
+                heading_name = f"Heading {i}"  # Notice the space between "Heading" and the number
+                style.base_style = doc.styles[heading_name]
                 style.font.name = 'Arial'
                 style.font.bold = True
                 style.font.size = Pt(20 - (i * 2))  # Decreasing size for each heading level
