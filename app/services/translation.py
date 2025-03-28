@@ -331,7 +331,7 @@ class TranslationService:
             
             logger.info(f"Image saved to temporary file: {img_path}")
             
-            prompt = """Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
+            prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
 
 1. Content Organization:
    - Maintain the original hierarchical structure (headers, sections, subsections)
@@ -545,16 +545,17 @@ Extract the content with minimal unnecessary line breaks, using them only to sep
         img_bytes = pix.tobytes(output="png")
         
         try:
-            prompt = """Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
+            prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
 
 Core Requirements:
 1. Structure Analysis:
-   - Identify whether content is tabular data, form fields, or flowing text
+   - Identify whether content is tabular data, form fields, or flowing text, or other type of formatting
    - Use appropriate HTML elements based on content type
-   - Only use <table> for genuinely tabular information
+   - Only use <table> for tabular information
    - Use flex layouts for form-like content with label:value pairs
    - Apply paragraph tags for standard text without forcing tabular structure
    - Maintain original spacing and layout using proper HTML semantics
+   - Maintain all the styles, including bolden, italic or other types of formatting.
 
 2. HTML Element Selection:
    - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
@@ -726,17 +727,17 @@ Carefully analyze each section of the document and apply the most appropriate HT
         for attempt in range(1, retries + 1):
             try:
                 # Create a unified prompt for all languages with strong anti-placeholder instructions
-                prompt = f"""Translate all text content in this HTML to {to_lang_display}.
+                prompt = f"""You are a professional translator with a knowledge of HTML. Translate all text content in this HTML to {to_lang_display}.
 
 STRICT AND CRITICAL RULES:
 1. Translate ALL text content to {to_lang_display} regardless of what language it's in
 2. DO NOT replace any words with placeholders like '$variable' or similar patterns
-3. Preserve ALL HTML tags, attributes, CSS classes, and structure exactly as they appear in the input
+3. PRESERVE ALL HTML tags, attributes, CSS classes, and structure EXACTLY as they are in the initial text
 4. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML
 5. Keep all spacing, indentation, and formatting consistent with the input
 6. Ensure your output is valid HTML that can be rendered directly in a browser
 7. DO NOT translate content within HTML comments marked with <!--PRESERVE--> and <!--/PRESERVE-->
-8. DO NOT translate content within <style> tags
+8. DO NOT translate content within <style> tags - they are used for document styling and will be parsed by front
 9. Don't translate these specific items:
    - Technical codes and identifiers (like product IDs, registration numbers)
    - Email addresses and URLs
@@ -745,7 +746,7 @@ STRICT AND CRITICAL RULES:
    - Technical standards (like EN 14411:2016)
    - Unit measurements and technical values (like NPD, N/mm2)
 
-Here is the HTML to translate:
+Here is the HTML with text to translate:
 
 {html_content_with_tags}
 """
