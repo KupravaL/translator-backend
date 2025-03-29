@@ -341,6 +341,7 @@ class TranslationService:
    - Keep related data points together on the same line when they form a logical unit
    - Maintain chronological or numerical sequence where present
    - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. 
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
 
 2. Formatting Guidelines:
    - Clearly distinguish headers and section titles from body content
@@ -556,6 +557,8 @@ Core Requirements:
    - Apply paragraph tags for standard text without forcing tabular structure
    - Maintain original spacing and layout using proper HTML semantics
    - Maintain all the styles, including bolden, italic or other types of formatting.
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+
 
 2. HTML Element Selection:
    - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
