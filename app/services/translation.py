@@ -320,7 +320,7 @@ class TranslationService:
         start_time = time.time()
         logger.info("Starting image content extraction")
         
-      # Create temporary file
+        # Create temporary file
         img_path = None
         
         try:
@@ -331,90 +331,48 @@ class TranslationService:
             
             logger.info(f"Image saved to temporary file: {img_path}")
             
-            prompt = """You are a professional HTML coder and multilanguage translator with deep knowledge of document structure. Extract text from documents, preserving all formatting and intelligently detecting the document structure to convert it into clean, semantic HTML.
+            prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
 
-## Core Requirements:
-
-1. Structure Analysis:
-   - Identify whether content is tabular data, form fields, flowing text, or other formatting types
-   - Use appropriate HTML elements based on content type
-   - Only use <table> for genuine tabular information
-   - Use flex layouts for form-like content with label:value pairs
-   - Apply paragraph tags for standard text without forcing tabular structure
-   - Maintain original spacing and layout using proper HTML semantics
-   - Preserve all styles including bold, italic, and other formatting
-   - If text is split into columns without borders between columns, add appropriate borders (full table or bottom-borders) at your discretion
-   - DO NOT include headers or footers with unnecessary information (sections in top/bottom margins separate from main content)
-   - DO NOT include page counts
-   - Format lists properly with each bullet point (numbered or not) on a separate line
-   - IMPORTANT: For line breaks, use <br>
-   - In cases where the structure is messy or unstructured, add appropriate structure at your discretion to improve readability
-
-2. HTML Element Selection:
-   - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
-   - Use heading tags (<h1> through <h6>) to maintain hierarchy
-   - For form-like content, implement:
-     <div class="form-row">
-       <div class="label">Label:</div>
-       <div class="value">Value</div>
-     </div>
-   - For actual tabular data use:
-     <table class="data-table">
-       <tr><th>Header</th></tr>
-       <tr><td>Data</td></tr>
-     </table>
-
-3. Content Type Handling:
-   A. Standard Text:
-      <p class="text-content">Regular paragraph text without table structure.</p>
-   
-   B. Form Content (no visible borders):
-      <div class="form-section">
-        <div class="form-row">
-          <div class="label">Field Name:</div>
-          <div class="value">Field Value</div>
-        </div>
-      </div>
-   
-   C. Tabular Data:
-      <table class="data-table">
-        <tr>
-          <th>Column 1</th>
-          <th>Column 2</th>
-        </tr>
-        <tr>
-          <td>Value 1</td>
-          <td>Value 2</td>
-        </tr>
-      </table>
-
-4. CSS Class Implementation:
-   - "form-section" for form content containers
-   - "data-table" for genuine tables
-   - "text-content" for regular text blocks
-   - "no-borders" for elements that should appear borderless
-
-5. Content Organization:
+1. Content Organization:
    - Maintain the original hierarchical structure (headers, sections, subsections)
+   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
+   - IMPORTANT: Do not generate HTML FOR IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
    - Preserve paragraph boundaries and logical content grouping
    - Keep related data points together on the same line when they form a logical unit
    - Maintain chronological or numerical sequence where present
-   - Take special attention to tables - preserve exact formatting when one row/column includes several rows/columns inside
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. 
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+   - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
+   - DO NOT Include pages count. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
+   - IMPORTANT: For line breaks, use <br>
 
-6. Special Handling:
+2. Formatting Guidelines:
+   - Clearly distinguish headers and section titles from body content
+   - Preserve tabular data relationships without splitting related columns
+   - Maintain proper indentation to show hierarchical relationships
+   - Keep contextually related numbers, measurements, or values together with their labels
+
+3. Special Handling:
+   - For lists of measurements/values, keep all parameters and their values together
    - For date-based content, ensure dates are formatted consistently as section headers
    - For forms or structured data, preserve the relationship between fields and values
    - For technical/scientific data, maintain the relationship between identifiers and their measurements
 
-7. Layout Preservation:
+4. Layout Preservation:
    - Identify when content is presented in columns and preserve column relationships
+   - Avoid arbitrary line breaks that split conceptually unified information
    - Maintain spacing that indicates logical grouping in the original
    - Preserve the flow of information in a way that maintains readability
 
-8. Important Exclusions:
-   - IMPORTANT: Do not generate HTML FOR IMAGES. If there is an image inside the document, JUST SKIP IT. Process text only, and its formatting. The Output Must never have any <img> tags, if the image without any text is identified, skip it.
+5. HTML Considerations:
+   - Do not introduce HTML tags into plain text extraction unless specifically requested
+   - If HTML formatting is present in the original, preserve semantic structure but not decorative elements
+   - Properly handle tables by maintaining row and column relationships
+   - If converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
+   - Ensure any HTML output is valid and properly nested
 
-Carefully analyze each section of the document and apply the most appropriate HTML structure. Return only valid, well-formed HTML with minimal unnecessary line breaks, using them only to separate distinct items or sections."""
+Extract the content with minimal unnecessary line breaks, using them only to separate distinct items or sections. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
 
             # Read image data directly from the file
             with open(img_path, 'rb') as f:
@@ -592,24 +550,23 @@ Carefully analyze each section of the document and apply the most appropriate HT
         img_bytes = pix.tobytes(output="png")
         
         try:
-            prompt = """You are a professional HTML coder and multilanguage translator with deep knowledge of document structure. Extract text from documents, preserving all formatting and intelligently detecting the document structure to convert it into clean, semantic HTML.
+            prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
 
-## Core Requirements:
-
+Core Requirements:
 1. Structure Analysis:
-   - Identify whether content is tabular data, form fields, flowing text, or other formatting types
+   - Identify whether content is tabular data, form fields, or flowing text, or other type of formatting
    - Use appropriate HTML elements based on content type
-   - Only use <table> for genuine tabular information
+   - Only use <table> for tabular information
    - Use flex layouts for form-like content with label:value pairs
    - Apply paragraph tags for standard text without forcing tabular structure
    - Maintain original spacing and layout using proper HTML semantics
-   - Preserve all styles including bold, italic, and other formatting
-   - If text is split into columns without borders between columns, add appropriate borders (full table or bottom-borders) at your discretion
-   - DO NOT include headers or footers with unnecessary information (sections in top/bottom margins separate from main content)
-   - DO NOT include page counts
-   - Format lists properly with each bullet point (numbered or not) on a separate line
+   - Maintain all the styles, including bolden, italic or other types of formatting.
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+   - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
+   - DO NOT Include pages count. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string.
    - IMPORTANT: For line breaks, use <br>
-   - In cases where the structure is messy or unstructured, add appropriate structure at your discretion to improve readability
+
 
 2. HTML Element Selection:
    - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
@@ -655,31 +612,8 @@ Carefully analyze each section of the document and apply the most appropriate HT
    - "text-content" for regular text blocks
    - "no-borders" for elements that should appear borderless
 
-5. Content Organization:
-   - Maintain the original hierarchical structure (headers, sections, subsections)
-   - Preserve paragraph boundaries and logical content grouping
-   - Keep related data points together on the same line when they form a logical unit
-   - Maintain chronological or numerical sequence where present
-   - Take special attention to tables - preserve exact formatting when one row/column includes several rows/columns inside
+Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
 
-6. Special Handling:
-   - For lists of measurements/values, keep all parameters and their values together
-   - For date-based content, ensure dates are formatted consistently as section headers
-   - For forms or structured data, preserve the relationship between fields and values
-   - For technical/scientific data, maintain the relationship between identifiers and their measurements
-
-7. Layout Preservation:
-   - Identify when content is presented in columns and preserve column relationships
-   - Avoid arbitrary line breaks that split conceptually unified information
-   - Maintain spacing that indicates logical grouping in the original
-   - Preserve the flow of information in a way that maintains readability
-
-8. Important Exclusions:
-   - IMPORTANT: Do not generate HTML FOR IMAGES. If there is an image inside the document, JUST SKIP IT. Process text only, and its formatting. The Output Must never have any <img> tags, if the image without any text is identified, skip it.
-
-Carefully analyze each section of the document and apply the most appropriate HTML structure. Return only valid, well-formed HTML with minimal unnecessary line breaks, using them only to separate distinct items or sections."""
-
-            
             response = self.extraction_model.generate_content(
                 contents=[prompt, {"mime_type": "image/png", "data": img_bytes}],
                 generation_config={"temperature": 0.1}
