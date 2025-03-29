@@ -402,14 +402,12 @@ class TranslationService:
    - Take special attention to tables - preserve exact formatting when one row/column includes several rows/columns inside
 
 6. Special Handling:
-   - For lists of measurements/values, keep all parameters and their values together
    - For date-based content, ensure dates are formatted consistently as section headers
    - For forms or structured data, preserve the relationship between fields and values
    - For technical/scientific data, maintain the relationship between identifiers and their measurements
 
 7. Layout Preservation:
    - Identify when content is presented in columns and preserve column relationships
-   - Avoid arbitrary line breaks that split conceptually unified information
    - Maintain spacing that indicates logical grouping in the original
    - Preserve the flow of information in a way that maintains readability
 
