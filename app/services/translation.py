@@ -346,6 +346,8 @@ class TranslationService:
    - DO NOT Include pages count. 
    - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
    - IMPORTANT: For line breaks, use <br>
+   - IMPORTANT: split paragraphs and sentences exactly how they are in the initial document, with the same formatting. 
+   - IMPORTANT: Pay special attention to tables, regarding their size (small or big, massive tables)
 
 2. Formatting Guidelines:
    - Clearly distinguish headers and section titles from body content
