@@ -345,9 +345,6 @@ class TranslationService:
    - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
    - DO NOT Include pages count. 
    - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
-   - IMPORTANT: For line breaks, use <br>
-   - IMPORTANT: split paragraphs and sentences exactly how they are in the initial document, with the same formatting. 
-   - IMPORTANT: Pay special attention to tables, regarding their size (small or big, massive tables)
 
 2. Formatting Guidelines:
    - Clearly distinguish headers and section titles from body content
@@ -566,8 +563,8 @@ Core Requirements:
    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
    - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
    - DO NOT Include pages count. 
-   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string.
-   - IMPORTANT: For line breaks, use <br>
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
+
 
 
 2. HTML Element Selection:
