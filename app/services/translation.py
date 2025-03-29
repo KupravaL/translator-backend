@@ -320,7 +320,7 @@ class TranslationService:
         start_time = time.time()
         logger.info("Starting image content extraction")
         
-        # Create temporary file
+      # Create temporary file
         img_path = None
         
         try:
@@ -331,7 +331,7 @@ class TranslationService:
             
             logger.info(f"Image saved to temporary file: {img_path}")
             
-           prompt = """You are a professional HTML coder and multilanguage translator with deep knowledge of document structure. Extract text from documents, preserving all formatting and intelligently detecting the document structure to convert it into clean, semantic HTML.
+            prompt = """You are a professional HTML coder and multilanguage translator with deep knowledge of document structure. Extract text from documents, preserving all formatting and intelligently detecting the document structure to convert it into clean, semantic HTML.
 
 ## Core Requirements:
 
