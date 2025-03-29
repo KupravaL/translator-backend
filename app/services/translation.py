@@ -560,6 +560,8 @@ Core Requirements:
    - Maintain original spacing and layout using proper HTML semantics
    - Maintain all the styles, including bolden, italic or other types of formatting.
    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+   - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
+   - DO NOT Include pages count. 
 
 
 2. HTML Element Selection:
