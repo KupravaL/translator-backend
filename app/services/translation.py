@@ -359,19 +359,15 @@ class TranslationService:
 
 4. Layout Preservation:
    - Identify when content is presented in columns and preserve column relationships
-   - Avoid arbitrary line breaks that split conceptually unified information
    - Maintain spacing that indicates logical grouping in the original
    - Preserve the flow of information in a way that maintains readability
 
 5. HTML Considerations:
-   - Do not introduce HTML tags into plain text extraction unless specifically requested
-   - If HTML formatting is present in the original, preserve semantic structure but not decorative elements
    - Properly handle tables by maintaining row and column relationships
    - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
    - Ensure any HTML output is valid and properly nested
-   - For line brakes or new paragraphs, do not use \n, use <p> rags or <br>
-
-Extract the content with minimal unnecessary line breaks, using them only to separate distinct items or sections. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
+   
+Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
 
             # Read image data directly from the file
             with open(img_path, 'rb') as f:
