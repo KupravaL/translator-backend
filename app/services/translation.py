@@ -342,6 +342,8 @@ class TranslationService:
    - Maintain chronological or numerical sequence where present
    - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. 
    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+   - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
+   - DO NOT Include pages count. 
 
 2. Formatting Guidelines:
    - Clearly distinguish headers and section titles from body content
