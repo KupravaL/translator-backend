@@ -366,6 +366,7 @@ class TranslationService:
    - Properly handle tables by maintaining row and column relationships
    - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
    - Ensure any HTML output is valid and properly nested
+   - Make sure text has paragraphs and they are not together, but logically splited with <p> and <br> tags so the text is readable. 
    
 Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
 
