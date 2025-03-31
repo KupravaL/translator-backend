@@ -1,5 +1,4 @@
 import time
-import google.generativeai as genai
 import os
 import fitz
 import tempfile
@@ -15,6 +14,8 @@ import io
 import asyncio
 import nest_asyncio
 import hashlib
+from google import genai
+from google.genai import types
 
 # Configure logging
 logging.basicConfig(
@@ -34,14 +35,12 @@ class TranslationService:
     def __init__(self):
         # Initialize Google Gemini
         if settings.GOOGLE_API_KEY:
-            genai.configure(api_key=settings.GOOGLE_API_KEY)
-            # Use Gemini-2.0-flash for content extraction and translation
-            self.extraction_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
-            self.translation_model = genai.GenerativeModel(model_name="gemini-2.0-flash")
-            logger.info("Initialized Google Gemini models for extraction and translation")
+            self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
+            self.extraction_model = "gemini-2.5-pro-exp-03-25"
+            self.translation_model = "gemini-2.5-pro-exp-03-25"
+            logger.info("Initialized Google Gemini 2.5 client for extraction and translation")
         else:
-            self.extraction_model = None
-            self.translation_model = None
+            self.client = None
             logger.warning("Google API key not configured - extraction and translation functionality will be unavailable")
         
         # Language-specific configuration - uniform approach for all languages
@@ -704,7 +703,7 @@ Carefully analyze each section of the document and apply the most appropriate HT
         Enhanced version that handles all languages consistently with special attention to 
         prevention of placeholder issues and proper preservation of content.
         """
-        if not self.translation_model:
+        if not self.client:
             logger.error("Google API key not configured for translation")
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
@@ -760,14 +759,25 @@ Here is the HTML with text to translate:
                 translation_start = time.time()
                 
                 # Use configuration parameters
-                response = self.translation_model.generate_content(
-                    prompt,
-                    generation_config={
-                        "temperature": lang_config.get("temperature", 0.15),
-                        "top_p": lang_config.get("top_p", 0.97),
-                        "top_k": lang_config.get("top_k", 45),
-                        "max_output_tokens": lang_config.get("max_output_tokens", 8192)
-                    }
+                contents = [
+                    types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=prompt)]
+                    )
+                ]
+
+                generation_config = types.GenerateContentConfig(
+                    temperature=lang_config.get("temperature", 0.15),
+                    top_p=lang_config.get("top_p", 0.97),
+                    top_k=lang_config.get("top_k", 45),
+                    max_output_tokens=lang_config.get("max_output_tokens", 8192),
+                    response_mime_type="text/plain"
+                )
+
+                response = self.client.models.generate_content(
+                    model=self.translation_model,
+                    contents=contents,
+                    config=generation_config
                 )
                 
                 translation_duration = time.time() - translation_start
