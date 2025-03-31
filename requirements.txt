@@ -30,7 +30,7 @@ pydantic-settings==2.2.1
 python-dotenv==1.0.0
 
 # AI and Translation Services
-google-generativeai==0.3.2
+google-generativeai==0.7.0
 # anthropic==0.18.0  # No longer needed as we're using Google Gemini for both extraction and translation
 
 # Document Processing
@@ -45,7 +45,7 @@ docx2pdf==0.1.8
 
 # Utilities
 uuid==1.30
-google-generativeai==0.7.0
+
 
 # Optional Translation Libraries (commented out)
 # deep-translator==1.9.1  # Multiple translation services
