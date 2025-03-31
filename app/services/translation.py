@@ -631,7 +631,7 @@ Carefully analyze each section of the document and apply the most appropriate HT
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt),
-                        types.Part.from_bytes(data=img_bytes, mime_type="application/octet-stream")  # Use from_bytes as it worked for images
+                        types.Part.from_bytes(data=img_bytes, mime_type="application/pdf")  # Use from_bytes as it worked for images
                     ],
                 ),
             ]
