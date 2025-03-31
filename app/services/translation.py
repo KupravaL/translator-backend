@@ -339,7 +339,7 @@ class TranslationService:
    - IMPORTANT: Do not generate HTML FOR IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
    - Preserve paragraph boundaries and logical content grouping
    - Maintain chronological or numerical sequence where present
-   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. 
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. 
    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
    - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
    - DO NOT Include pages count. 
