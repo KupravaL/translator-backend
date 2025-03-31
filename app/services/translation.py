@@ -387,8 +387,7 @@ Extract the content so it looks like in the initial document as much as possible
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt),
-                        types.Part.from_bytes(data=image_data.content, mime_type="image/jpeg"),
-                        
+                        types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
                     ],
                 ),
             ]
