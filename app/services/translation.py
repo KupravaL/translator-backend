@@ -41,6 +41,8 @@ class TranslationService:
             logger.info("Initialized Google Gemini 2.5 client for extraction and translation")
         else:
             self.client = None
+            self.extraction_model = None
+            self.translation_model = None
             logger.warning("Google API key not configured - extraction and translation functionality will be unavailable")
         
         # Language-specific configuration - uniform approach for all languages
@@ -312,7 +314,7 @@ class TranslationService:
         
     async def extract_from_image(self, image_bytes: bytes) -> str:
         """Extract content from an image using Google Gemini."""
-        if not self.extraction_model:
+        if not self.client:
             logger.error("Google API key not configured for image extraction")
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
@@ -379,9 +381,25 @@ Extract the content so it looks like in the initial document as much as possible
             
             logger.info(f"Sending image to Gemini for analysis")
             
-            response = self.extraction_model.generate_content(
-                contents=[prompt, {"mime_type": "image/jpeg", "data": image_data}],
-                generation_config={"temperature": 0.1}
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=prompt),
+                        types.Part.from_data(data=image_data, mime_type="image/jpeg")
+                    ],
+                ),
+            ]
+            
+            generation_config = types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="text/plain"
+            )
+            
+            response = self.client.models.generate_content(
+                model=self.extraction_model,
+                contents=contents,
+                config=generation_config
             )
             
             html_content = response.text.strip()
@@ -607,9 +625,26 @@ Core Requirements:
 
 Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
 
-            response = self.extraction_model.generate_content(
-                contents=[prompt, {"mime_type": "image/png", "data": img_bytes}],
-                generation_config={"temperature": 0.1}
+            # Create content for the request
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=prompt),
+                        types.Part.from_data(data=img_bytes, mime_type="image/png")
+                    ],
+                ),
+            ]
+            
+            generation_config = types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="text/plain"
+            )
+            
+            response = self.client.models.generate_content(
+                model=self.extraction_model,
+                contents=contents,
+                config=generation_config
             )
             
             html_content = response.text.strip()
