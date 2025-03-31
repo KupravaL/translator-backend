@@ -45,6 +45,7 @@ docx2pdf==0.1.8
 
 # Utilities
 uuid==1.30
+google-generativeai==0.7.0
 
 # Optional Translation Libraries (commented out)
 # deep-translator==1.9.1  # Multiple translation services
