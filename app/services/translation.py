@@ -339,11 +339,11 @@ class TranslationService:
    - IMPORTANT: Do not generate HTML FOR IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
    - Preserve paragraph boundaries and logical content grouping
    - Maintain chronological or numerical sequence where present
-   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. 
-   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. Do not generate complex tables - generate simple tables that can be pasted in the document without heavy html
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table). Or if the text is splitted to columns and has a vertical/horizontal separator - just paste them in the table and create a simple table for such scenario.
    - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
    - DO NOT Include pages count. 
-   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Dont use complex html/css for bullets so that they can be easily pasted in docx or Google Docs
 
 2. Formatting Guidelines:
    - Clearly distinguish headers and section titles from body content
@@ -552,6 +552,8 @@ Core Requirements:
 1. Structure Analysis:
    - Identify whether content is tabular data, form fields, or flowing text, or other type of formatting
    - Use appropriate HTML elements based on content type
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. Do not generate complex tables - generate simple tables that can be pasted in the document without heavy html
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table). Or if the text is splitted to columns and has a vertical/horizontal separator - just paste them in the table and create a simple table for such scenario.
    - Only use <table> for tabular information
    - Use flex layouts for form-like content with label:value pairs
    - Apply paragraph tags for standard text without forcing tabular structure
