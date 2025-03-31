@@ -503,6 +503,7 @@ Extract the content so it looks like in the initial document as much as possible
                 except Exception as e:
                     logger.warning(f"Error during file cleanup: {e}")
 
+    # Fix 4: Enhance the extract_page_content method to better handle empty responses
     async def extract_page_content(self, pdf_bytes: bytes, page_index: int) -> str:
         """Extract content from a PDF page using Google Gemini."""
         if not self.extraction_model:
@@ -521,16 +522,47 @@ Extract the content so it looks like in the initial document as much as possible
             with fitz.open(stream=buffer, filetype="pdf") as doc:
                 if page_index >= len(doc):
                     logger.warning(f"Page {page_index + 1} does not exist")
-                    return ''
+                    return '<div class="page"><p class="text-content">Page does not exist in document.</p></div>'
                 
                 page = doc[page_index]
+                
+                # Add page diagnostics to help with debugging
+                logger.info(f"Page {page_index + 1} dimensions: {page.rect}, rotation: {page.rotation}")
+                
+                # Extract text from page for diagnostics
+                raw_text = page.get_text()
+                if raw_text:
+                    logger.info(f"Page {page_index + 1} contains {len(raw_text)} chars of raw text")
+                    text_sample = raw_text[:100].replace('\n', ' ')
+                    logger.info(f"Sample text: {text_sample}...")
+                else:
+                    logger.warning(f"Page {page_index + 1} contains no extractable text")
                 
                 # Extract content with Gemini
                 html_content = await self._get_formatted_text_from_gemini_buffer(page)
                 
+                # Enhanced empty content check with better fallback
                 if not html_content or html_content.strip() == '':
                     logger.error(f"Empty or too short content on page {page_index + 1}")
-                    return ''
+                    # Try basic text extraction as fallback
+                    if raw_text and len(raw_text.strip()) > 0:
+                        from html import escape
+                        escaped_text = escape(raw_text)
+                        paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
+                        formatted_content = ""
+                        for p in paragraphs:
+                            formatted_content += f"<p class='text-content'>{p}</p>\n"
+                        html_content = f"<div class='page'>{formatted_content}</div>"
+                        logger.info(f"Used fallback text extraction for page {page_index + 1}")
+                    else:
+                        html_content = "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
+                        logger.warning(f"Created placeholder for empty page {page_index + 1}")
+                
+                # Validate structure of content
+                if '<div class=' not in html_content:
+                    # Ensure content has proper wrapper
+                    html_content = f"<div class='page'>{html_content}</div>"
+                    logger.info(f"Added missing page wrapper to content")
                 
                 logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
                 logger.info(f"Page extraction took {time.time() - start_time:.2f} seconds")
@@ -539,10 +571,8 @@ Extract the content so it looks like in the initial document as much as possible
                 
         except Exception as e:
             logger.error(f"Gemini processing error for page {page_index + 1}: {str(e)}")
-            raise TranslationError(
-                f"Failed to process page {page_index + 1}: {str(e)}",
-                getattr(e, 'code', 'PROCESSING_ERROR')
-            )
+            # Return a placeholder instead of raising an exception
+            return f"<div class='page'><p class='text-content'>Error processing page {page_index + 1}: {str(e)}</p></div>"
         finally:
             # Ensure buffer is closed
             if 'buffer' in locals():
@@ -550,15 +580,60 @@ Extract the content so it looks like in the initial document as much as possible
             
             # Force garbage collection
             gc.collect()
+    
+    # Fix 5: Enhance the translate_document_content_sync_wrapper to handle content verification
+    # Add this method to better validate and fix content structure before saving
+    def _validate_and_fix_content(self, content, title=""):
+        """Ensure content has proper structure and non-empty text content"""
+        try:
+            if not content or len(content.strip()) < 10:
+                logger.warning(f"Empty or very short content detected in {title}")
+                return f"<div class='page'><p class='text-content'>No processable content was found in this section.</p></div>"
+            
+            # Check if content has div structure
+            if '<div' not in content:
+                content = f"<div class='page'>{content}</div>"
+                logger.info(f"Added missing page wrapper in {title}")
+            
+            # Parse with BeautifulSoup to check content
+            soup = BeautifulSoup(content, 'html.parser')
+            text_content = soup.get_text().strip()
+            
+            if not text_content:
+                logger.warning(f"Content has HTML but no text in {title}")
+                return f"<div class='page'><p class='text-content'>Content structure was detected but no readable text was found.</p></div>"
+            
+            # Ensure the structure is proper
+            page_div = soup.find('div', class_='page')
+            if not page_div:
+                # Wrap all content in a page div
+                new_soup = BeautifulSoup('<div class="page"></div>', 'html.parser')
+                new_page = new_soup.find('div', class_='page')
+                # Move all content into the page div
+                for child in list(soup.children):
+                    if isinstance(child, str):
+                        if child.strip():
+                            p = new_soup.new_tag('p', attrs={'class': 'text-content'})
+                            p.string = child
+                            new_page.append(p)
+                    else:
+                        new_page.append(child)
+                return str(new_soup)
+            
+            return content
+        except Exception as e:
+            logger.error(f"Error validating content in {title}: {str(e)}")
+            return content  # Return original to avoid further issues
 
+    # Fix 1: Correct the MIME type in _get_formatted_text_from_gemini_buffer method
     async def _get_formatted_text_from_gemini_buffer(self, page):
         """Use Gemini to analyze and extract formatted text with improved memory management"""
         page_index = page.number
         page_start_time = time.time()
         logger.info(f"Extracting formatted text from page {page_index + 1} using Gemini")
         
-        # Create a pixmap without writing to disk
-        pix = page.get_pixmap()
+        # Create a pixmap with improved resolution for better text extraction
+        pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(2, 2))
         
         # Convert pixmap to bytes in memory
         img_bytes = pix.tobytes(output="png")
@@ -566,72 +641,73 @@ Extract the content so it looks like in the initial document as much as possible
         try:
             prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
 
-Core Requirements:
-1. Structure Analysis:
-   - Identify whether content is tabular data, form fields, or flowing text, or other type of formatting
-   - Use appropriate HTML elements based on content type
-   - Only use <table> for tabular information
-   - Use flex layouts for form-like content with label:value pairs
-   - Apply paragraph tags for standard text without forcing tabular structure
-   - Maintain original spacing and layout using proper HTML semantics
-   - Maintain all the styles, including bolden, italic or other types of formatting.
-   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
-   - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
-   - DO NOT Include pages count. 
-   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
+    Core Requirements:
+    1. Structure Analysis:
+    - Identify whether content is tabular data, form fields, or flowing text, or other type of formatting
+    - Use appropriate HTML elements based on content type
+    - Only use <table> for tabular information
+    - Use flex layouts for form-like content with label:value pairs
+    - Apply paragraph tags for standard text without forcing tabular structure
+    - Maintain original spacing and layout using proper HTML semantics
+    - Maintain all the styles, including bolden, italic or other types of formatting.
+    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+    - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
+    - DO NOT Include pages count. 
+    - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
 
-2. HTML Element Selection:
-   - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
-   - Use heading tags (<h1> through <h6>) to maintain hierarchy
-   - For form-like content, implement:
-     <div class="form-row">
-       <div class="label">Label:</div>
-       <div class="value">Value</div>
-     </div>
-   - For actual tabular data use:
-     <table class="data-table">
-       <tr><th>Header</th></tr>
-       <tr><td>Data</td></tr>
-     </table>
-
-3. Content Type Handling:
-   A. Standard Text:
-      <p class="text-content">Regular paragraph text without table structure.</p>
-   
-   B. Form Content (no visible borders):
-      <div class="form-section">
+    2. HTML Element Selection:
+    - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
+    - Use heading tags (<h1> through <h6>) to maintain hierarchy
+    - For form-like content, implement:
         <div class="form-row">
-          <div class="label">Field Name:</div>
-          <div class="value">Field Value</div>
+        <div class="label">Label:</div>
+        <div class="value">Value</div>
         </div>
-      </div>
-   
-   C. Tabular Data:
-      <table class="data-table">
-        <tr>
-          <th>Column 1</th>
-          <th>Column 2</th>
-        </tr>
-        <tr>
-          <td>Value 1</td>
-          <td>Value 2</td>
-        </tr>
-      </table>
+    - For actual tabular data use:
+        <table class="data-table">
+        <tr><th>Header</th></tr>
+        <tr><td>Data</td></tr>
+        </table>
 
-4. CSS Class Implementation:
-   - "form-section" for form content containers
-   - "data-table" for genuine tables
-   - "text-content" for regular text blocks
-   - "no-borders" for elements that should appear borderless
+    3. Content Type Handling:
+    A. Standard Text:
+        <p class="text-content">Regular paragraph text without table structure.</p>
+    
+    B. Form Content (no visible borders):
+        <div class="form-section">
+            <div class="form-row">
+            <div class="label">Field Name:</div>
+            <div class="value">Field Value</div>
+            </div>
+        </div>
+    
+    C. Tabular Data:
+        <table class="data-table">
+            <tr>
+            <th>Column 1</th>
+            <th>Column 2</th>
+            </tr>
+            <tr>
+            <td>Value 1</td>
+            <td>Value 2</td>
+            </tr>
+        </table>
 
-Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
+    4. CSS Class Implementation:
+    - "form-section" for form content containers
+    - "data-table" for genuine tables
+    - "text-content" for regular text blocks
+    - "no-borders" for elements that should appear borderless
+
+    Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
 
             contents = [
                 types.Content(
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt),
-                        types.Part.from_bytes(data=img_bytes, mime_type="application/pdf")  # Use from_bytes as it worked for images
+                        # Fix: Use correct MIME type for PNG image
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/png")
                     ],
                 ),
             ]
@@ -652,52 +728,52 @@ Carefully analyze each section of the document and apply the most appropriate HT
             
             # Add enhanced CSS styles
             css_styles = """
-<style>
-    .document {
-        width: 100%;
-        max-width: 1000px;
-        margin: 0 auto;
-        font-family: Arial, sans-serif;
-        line-height: 1.5;
-    }
-    .text-content {
-        margin-bottom: 1em;
-    }
-    .form-section {
-        margin-bottom: 1em;
-    }
-    .form-row {
-        display: flex;
-        margin-bottom: 0.5em;
-        gap: 1em;
-    }
-    .label {
-        width: 200px;
-        flex-shrink: 0;
-    }
-    .value {
-        flex-grow: 1;
-    }
-    .data-table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-bottom: 1em;
-    }
-    .data-table:not(.no-borders) td,
-    .data-table:not(.no-borders) th {
-        border: 1px solid black;
-        padding: 0.5em;
-    }
-    .no-borders td,
-    .no-borders th {
-        border: none !important;
-    }
-    .header {
-        text-align: right;
-        margin-bottom: 20px;
-    }
-</style>
-"""
+    <style>
+        .document {
+            width: 100%;
+            max-width: 1000px;
+            margin: 0 auto;
+            font-family: Arial, sans-serif;
+            line-height: 1.5;
+        }
+        .text-content {
+            margin-bottom: 1em;
+        }
+        .form-section {
+            margin-bottom: 1em;
+        }
+        .form-row {
+            display: flex;
+            margin-bottom: 0.5em;
+            gap: 1em;
+        }
+        .label {
+            width: 200px;
+            flex-shrink: 0;
+        }
+        .value {
+            flex-grow: 1;
+        }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1em;
+        }
+        .data-table:not(.no-borders) td,
+        .data-table:not(.no-borders) th {
+            border: 1px solid black;
+            padding: 0.5em;
+        }
+        .no-borders td,
+        .no-borders th {
+            border: none !important;
+        }
+        .header {
+            text-align: right;
+            margin-bottom: 20px;
+        }
+    </style>
+    """
             if '<style>' not in html_content:
                 html_content = f"{css_styles}\n{html_content}"
             
@@ -710,15 +786,53 @@ Carefully analyze each section of the document and apply the most appropriate HT
                     index_div.string = corrected_index
                     
             html_content = str(soup)
-            logger.info(f"Page {page_index + 1} content processed, final size: {len(html_content)} chars")
+            
+            # Enhanced validation to ensure we have actual content
+            text_content = re.sub(r'<[^>]+>', '', html_content).strip()
+            if len(html_content) < 50 or '<' not in html_content or not text_content:
+                logger.error("Invalid or insufficient content extracted from page")
+                # Fall back to simpler extraction but don't return empty
+                text = page.get_text()
+                if text and len(text.strip()) > 0:
+                    # Fix 2: Properly escape HTML in text extraction fallback
+                    from html import escape
+                    escaped_text = escape(text)
+                    paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
+                    formatted_content = ""
+                    for p in paragraphs:
+                        formatted_content += f"<p class='text-content'>{p}</p>\n"
+                    return f"<div class='page'>{formatted_content}</div>"
+                else:
+                    # If truly empty, create a placeholder saying so
+                    return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
+            
+            logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
             
             return html_content
             
         except Exception as e:
             logger.error(f"Error in Gemini processing for page {page_index + 1}: {e}")
-            text = page.get_text()
-            logger.warning(f"Falling back to plain text extraction for page {page_index + 1} ({len(text)} chars)")
-            return f"<div class='text-content'>{text}</div>"
+            # Fix 3: Improved fallback logic for text extraction
+            try:
+                text = page.get_text()
+                logger.warning(f"Falling back to plain text extraction for page {page_index + 1} ({len(text)} chars)")
+                
+                # Better handling of fallback text
+                if text and len(text.strip()) > 0:
+                    from html import escape
+                    escaped_text = escape(text)
+                    # Split text into paragraphs and preserve structure
+                    paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
+                    formatted_content = ""
+                    for p in paragraphs:
+                        formatted_content += f"<p class='text-content'>{p}</p>\n"
+                    return f"<div class='page'>{formatted_content}</div>"
+                else:
+                    # Create meaningful placeholder for empty pages
+                    return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
+            except Exception as text_error:
+                logger.error(f"Fallback text extraction also failed: {text_error}")
+                return "<div class='page'><p class='text-content'>Error processing this page: couldn't extract content.</p></div>"
         finally:
             # Clean up resources
             del pix
