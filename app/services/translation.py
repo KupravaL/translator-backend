@@ -14,7 +14,7 @@ import io
 import asyncio
 import nest_asyncio
 import hashlib
-from google import genai
+import google.generativeai as genai
 from google.genai import types
 
 # Configure logging
