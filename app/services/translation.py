@@ -626,13 +626,12 @@ Core Requirements:
 
 Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
 
-            # Create content for the request
             contents = [
                 types.Content(
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt),
-                        types.Part.from_data(data=img_bytes, mime_type="image/png")
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/png")  # Use from_bytes as it worked for images
                     ],
                 ),
             ]
