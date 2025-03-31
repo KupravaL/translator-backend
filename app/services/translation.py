@@ -16,6 +16,7 @@ import nest_asyncio
 import hashlib
 from google import genai
 from google.genai import types
+import base64
 
 # Configure logging
 logging.basicConfig(
@@ -386,7 +387,7 @@ Extract the content so it looks like in the initial document as much as possible
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt),
-                        types.Part.from_data(data=image_data, mime_type="image/jpeg")
+                        types.Part.from_data(data=base64.b64encode(image_data).decode(), mime_type="image/jpeg")
                     ],
                 ),
             ]
