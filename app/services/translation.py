@@ -894,7 +894,7 @@ STRICT AND CRITICAL RULES:
    - Technical codes and identifiers (like product IDs, registration numbers)
    - Email addresses and URLs
    - Brand and company names
-   - Technical standards (like EN 14411:2016)
+   - Technical standards (like EN 14411:2016) - but make sure to translate technical descriptions always
    - Unit measurements and technical values (like NPD, N/mm2, etc.)
 
 Here is the HTML with text to translate:
