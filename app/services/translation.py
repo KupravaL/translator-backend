@@ -656,6 +656,7 @@ Extract the content so it looks like in the initial document as much as possible
     - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
     - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
     - DO NOT Include pages count. 
+    - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
     - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Only create simple bullets regarding the style of bullets in initial documents. Standard dot/number bullets. 
 
     2. HTML Element Selection:
