@@ -343,12 +343,10 @@ class TranslationService:
    - Maintain chronological or numerical sequence where present
    - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
-   - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
    - DO NOT Include pages count. 
    - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
 
 2. Formatting Guidelines:
-   - Clearly distinguish headers and section titles from body content
    - Maintain all the styles, including bolden, italic or other types of formatting.
    - Preserve tabular data relationships
    - Maintain proper indentation to show hierarchical relationships
@@ -654,7 +652,6 @@ Extract the content so it looks like in the initial document as much as possible
     - Maintain all the styles, including bolden, italic or other types of formatting. 
     - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
     - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
-    - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
     - DO NOT Include pages count. 
     - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
     - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Only create simple bullets regarding the style of bullets in initial documents. Standard dot/number bullets. 
