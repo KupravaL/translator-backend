@@ -338,7 +338,7 @@ class TranslationService:
 1. Content Organization:
    - Maintain the original hierarchical structure (headers, sections, subsections)
    - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
-   - IMPORTANT: Do not generate HTML FOR IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
+   - IMPORTANT: NEVER GENERATE HTML FOR IMAGES. ALWAYS SKIP IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. If around the image tehre's a text, translate text only.
    - Preserve paragraph boundaries and logical content grouping
    - Maintain chronological or numerical sequence where present
    - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
@@ -359,6 +359,7 @@ class TranslationService:
    - For date-based content, ensure dates are formatted consistently as section headers
    - For forms or structured data, preserve the relationship between fields and values
    - For technical/scientific data, maintain the relationship between identifiers and their measurements
+   - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
 
 4. Layout Preservation:
    - Identify when content is presented in columns and preserve column relationships
