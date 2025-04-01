@@ -341,14 +341,15 @@ class TranslationService:
    - IMPORTANT: Do not generate HTML FOR IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. 
    - Preserve paragraph boundaries and logical content grouping
    - Maintain chronological or numerical sequence where present
-   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. 
-   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
    - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
    - DO NOT Include pages count. 
-   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
 
 2. Formatting Guidelines:
    - Clearly distinguish headers and section titles from body content
+   - Maintain all the styles, including bolden, italic or other types of formatting.
    - Preserve tabular data relationships
    - Maintain proper indentation to show hierarchical relationships
    - Keep contextually related numbers, measurements, or values together with their labels
@@ -639,7 +640,7 @@ Extract the content so it looks like in the initial document as much as possible
         img_bytes = pix.tobytes(output="png")
         
         try:
-            prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
+            prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML and styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
 
     Core Requirements:
     1. Structure Analysis:
@@ -649,11 +650,12 @@ Extract the content so it looks like in the initial document as much as possible
     - Use flex layouts for form-like content with label:value pairs
     - Apply paragraph tags for standard text without forcing tabular structure
     - Maintain original spacing and layout using proper HTML semantics
-    - Maintain all the styles, including bolden, italic or other types of formatting.
-    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table), or bottom-borders, at your discretion. 
+    - Maintain all the styles, including bolden, italic or other types of formatting. 
+    - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
+    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
     - DO NOT Include any existing headers or footers with unnecessary information. In a document, headers and footers are sections located in the top and bottom margins, respectively, and are separate from the main body of the document. These elements are used to include information that is repeated across all pages.
     - DO NOT Include pages count. 
-    - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. 
+    - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Only create simple bullets regarding the style of bullets in initial documents. Standard dot/number bullets. 
 
     2. HTML Element Selection:
     - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
@@ -697,8 +699,6 @@ Extract the content so it looks like in the initial document as much as possible
     - "form-section" for form content containers
     - "data-table" for genuine tables
     - "text-content" for regular text blocks
-    - "no-borders" for elements that should appear borderless
-
     Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
 
             contents = [
@@ -888,16 +888,15 @@ STRICT AND CRITICAL RULES:
 3. PRESERVE ALL HTML tags, attributes, CSS classes, and structure EXACTLY as they are in the initial text
 4. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML
 5. Keep all spacing, indentation, and formatting consistent with the input
-6. Ensure your output is valid HTML that can be rendered directly in a browser
+6. Ensure your output is valid HTML that can be rendered directly in a browser AND Google Docs/Word
 7. DO NOT translate content within HTML comments marked with <!--PRESERVE--> and <!--/PRESERVE-->
 8. DO NOT translate content within <style> tags - they are used for document styling and will be parsed by front
 9. Don't translate these specific items:
    - Technical codes and identifiers (like product IDs, registration numbers)
    - Email addresses and URLs
-   - Physical addresses 
    - Brand and company names
    - Technical standards (like EN 14411:2016)
-   - Unit measurements and technical values (like NPD, N/mm2)
+   - Unit measurements and technical values (like NPD, N/mm2, etc.)
 
 Here is the HTML with text to translate:
 
