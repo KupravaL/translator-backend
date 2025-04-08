@@ -315,21 +315,44 @@ class DocumentProcessingService:
                             with open(pdf_output_path, 'rb') as f:
                                 pdf_data = f.read()
                             
-                            prompt = """Analyze this document and convert it to properly formatted HTML with intelligent structure detection.
-                            
-                            Key Requirements:
-                            1. Structure Detection:
-                               - Identify if content is tabular/columnar or regular flowing text
-                               - Use tables ONLY for truly tabular content with clear columns and rows
-                               - For form-like content (label: value pairs), use flex layout without visible borders
-                               - For regular paragraphs and text, use simple <p> tags without any table structure
-                               - Preserve exact spacing and layout while using appropriate HTML elements
-                            
-                            2. Document Elements:
-                               - Use semantic HTML: <article>, <section>, <header>, <p>, <table> as appropriate
-                               - Use <h1> through <h6> for hierarchical headings
-                            
-                            Analyze the content carefully and use the most appropriate structure for each section. Return only valid HTML."""
+                            prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
+
+1. Content Organization:
+   - Maintain the original hierarchical structure (headers, sections, subsections)
+   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
+   - IMPORTANT: NEVER GENERATE HTML FOR IMAGES. ALWAYS SKIP IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. If around the image tehre's a text, translate text only.
+   - Preserve paragraph boundaries and logical content grouping
+   - Maintain chronological or numerical sequence where present
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
+   - DO NOT Include pages count. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
+
+2. Formatting Guidelines:
+   - Maintain all the styles, including bolden, italic or other types of formatting.
+   - Preserve tabular data relationships
+   - Maintain proper indentation to show hierarchical relationships
+   - Keep contextually related numbers, measurements, or values together with their labels
+
+3. Special Handling:
+   - For lists of measurements/values, keep all parameters and their values together
+   - For date-based content, ensure dates are formatted consistently as section headers
+   - For forms or structured data, preserve the relationship between fields and values
+   - For technical/scientific data, maintain the relationship between identifiers and their measurements
+   - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
+
+4. Layout Preservation:
+   - Identify when content is presented in columns and preserve column relationships
+   - Maintain spacing that indicates logical grouping in the original
+   - Preserve the flow of information in a way that maintains readability
+
+5. HTML Considerations:
+   - Properly handle tables by maintaining row and column relationships
+   - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
+   - Ensure any HTML output is valid and properly nested
+   - Make sure text has paragraphs and they are not together, but logically splited with <p> and <br> tags so the text is readable. 
+   
+Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
                             
                             # Use Gemini with the PDF, which is a supported format
                             response = translation_service.extraction_model.generate_content(
@@ -363,18 +386,44 @@ class DocumentProcessingService:
                                     plain_text += row_text + "\n"
                                 plain_text += "--- TABLE END ---\n\n"
                             
-                            prompt = """Convert this plain text document content to formatted HTML.
-                            If you see sections marked with '--- TABLE START ---' and '--- TABLE END ---', 
-                            convert those to proper HTML tables.
-                            
-                            1. Use appropriate HTML elements:
-                               - <h1>, <h2> for headings
-                               - <p> for paragraphs
-                               - <table>, <tr>, <td> for tables
-                            
-                            2. Apply basic styles for readability
-                            
-                            Return only valid HTML."""
+                            prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
+
+1. Content Organization:
+   - Maintain the original hierarchical structure (headers, sections, subsections)
+   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
+   - IMPORTANT: NEVER GENERATE HTML FOR IMAGES. ALWAYS SKIP IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. If around the image tehre's a text, translate text only.
+   - Preserve paragraph boundaries and logical content grouping
+   - Maintain chronological or numerical sequence where present
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
+   - DO NOT Include pages count. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
+
+2. Formatting Guidelines:
+   - Maintain all the styles, including bolden, italic or other types of formatting.
+   - Preserve tabular data relationships
+   - Maintain proper indentation to show hierarchical relationships
+   - Keep contextually related numbers, measurements, or values together with their labels
+
+3. Special Handling:
+   - For lists of measurements/values, keep all parameters and their values together
+   - For date-based content, ensure dates are formatted consistently as section headers
+   - For forms or structured data, preserve the relationship between fields and values
+   - For technical/scientific data, maintain the relationship between identifiers and their measurements
+   - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
+
+4. Layout Preservation:
+   - Identify when content is presented in columns and preserve column relationships
+   - Maintain spacing that indicates logical grouping in the original
+   - Preserve the flow of information in a way that maintains readability
+
+5. HTML Considerations:
+   - Properly handle tables by maintaining row and column relationships
+   - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
+   - Ensure any HTML output is valid and properly nested
+   - Make sure text has paragraphs and they are not together, but logically splited with <p> and <br> tags so the text is readable. 
+   
+Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
                             
                             # Send the plain text to Gemini
                             response = translation_service.extraction_model.generate_content(
