@@ -96,58 +96,230 @@ class DocumentProcessingService:
                  db.commit()
  
              else:
-                 print("📄 Processing PDF file using in-memory approach...")
- 
-                 # Create a BytesIO object from the file content
-                 pdf_buffer = io.BytesIO(file_content)
+                 print("📄 Processing document file...")
                  
-                 try:
-                     # Open PDF directly from memory
-                     with fitz.open(stream=pdf_buffer, filetype="pdf") as doc:
-                         translated_contents = []
-                         total_pages = len(doc)
-                         translation_progress.totalPages = total_pages
-                         db.commit()
- 
-                         for page_num in range(total_pages):
-                             print(f"📖 Processing page {page_num + 1}/{total_pages}")
-                             page = doc[page_num]
- 
-                             # Update progress
-                             translation_progress.currentPage = page_num + 1
-                             translation_progress.progress = ((page_num + 1) / total_pages) * 100
-                             db.commit()
- 
-                             # Import translation_service here to avoid circular imports
-                             from app.services.translation import translation_service
-                             # Extract formatted content using the in-memory version
-                             html_content = await translation_service._get_formatted_text_from_gemini_buffer(page)
- 
-                             if html_content and len(html_content) > 50:
-                                 translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
-                                 if translated_content:
-                                     translated_contents.append(translated_content)
-                                     db.add(TranslationChunk(processId=process_id, content=translated_content, pageNumber=page_num + 1))
-                                     db.commit()
-                                 else:
-                                     print(f"⚠️ Translation failed for page {page_num + 1}")
-                             else:
-                                 print(f"⚠️ No valid content extracted from page {page_num + 1}")
- 
-                         if not translated_contents:
-                             translation_progress.status = "failed"
-                             db.commit()
-                             raise TranslationError("No content extracted and translated from the document", "CONTENT_ERROR")
- 
-                         content = translation_service.combine_html_content(translated_contents)
- 
-                 finally:
-                     # Ensure all resources are properly closed
-                     if 'pdf_buffer' in locals():
-                         pdf_buffer.close()
+                 # Import translation_service here to avoid circular imports
+                 from app.services.translation import translation_service
+                 
+                 # Check if it's a DOCX or similar document file
+                 if file_type in ["application/msword", 
+                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                "application/vnd.oasis.opendocument.text"]:
+                     print("📝 Processing Office document using direct Gemini approach...")
                      
-                     # Force garbage collection
-                     gc.collect()
+                     # Direct Office file to Gemini approach (using PDF MIME type "trick")
+                     try:
+                         # Base64 encode the document data
+                         encoded_content = base64.b64encode(file_content).decode("utf-8")
+                         
+                         prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
+
+1. Content Organization:
+   - Maintain the original hierarchical structure (headers, sections, subsections)
+   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
+   - IMPORTANT: NEVER GENERATE HTML FOR IMAGES. ALWAYS SKIP IMAGES. If there is an image inside the document, JUST SKIP IT. Process text only, and its formatting. The Output Must never have any <img> tags, if the image without any text is identified, skip it. If around the image there's a text, translate text only.
+   - Preserve paragraph boundaries and logical content grouping
+   - Maintain chronological or numerical sequence where present
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns inside them, so preserve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
+   - If the text is split into columns, but there are no borders between the columns, add some borders (full table).
+   - DO NOT Include pages count. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
+
+2. Formatting Guidelines:
+   - Maintain all the styles, including bold, italic or other types of formatting.
+   - Preserve tabular data relationships
+   - Maintain proper indentation to show hierarchical relationships
+   - Keep contextually related numbers, measurements, or values together with their labels
+
+3. Special Handling:
+   - For lists of measurements/values, keep all parameters and their values together
+   - For date-based content, ensure dates are formatted consistently as section headers
+   - For forms or structured data, preserve the relationship between fields and values
+   - For technical/scientific data, maintain the relationship between identifiers and their measurements
+   - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
+
+4. Layout Preservation:
+   - Identify when content is presented in columns and preserve column relationships
+   - Maintain spacing that indicates logical grouping in the original
+   - Preserve the flow of information in a way that maintains readability
+
+5. HTML Considerations:
+   - Properly handle tables by maintaining row and column relationships
+   - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
+   - Ensure any HTML output is valid and properly nested
+   - Make sure text has paragraphs and they are not together, but logically split with <p> and <br> tags so the text is readable.
+
+Note: This file may appear in an unusual format. Focus on extracting the actual content and structure regardless of how the binary content is presented. This document has been provided for extraction.
+   
+Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
+                         
+                         # Send to Gemini but declare as PDF
+                         response = translation_service.extraction_model.generate_content(
+                             contents=[
+                                 prompt,
+                                 {
+                                     # Use PDF MIME type even though it's a DOCX file
+                                     "mime_type": "application/pdf", 
+                                     "data": file_content  # Raw document bytes
+                                 }
+                             ],
+                             generation_config={"temperature": 0.1}
+                         )
+                         
+                         html_content = response.text.strip()
+                         
+                         # Clean up any code block markers that might be in the output
+                         html_content = html_content.replace('```html', '').replace('```', '').strip()
+                         
+                         if not html_content or len(html_content) < 100:
+                             raise Exception("Gemini returned insufficient content, falling back to standard processing")
+                         
+                         print(f"✅ Successfully extracted content using direct Gemini approach: {len(html_content)} chars")
+                         
+                         # Add style if not present
+                         if '<style>' not in html_content:
+                             css_styles = """
+            <style>
+                .document {
+                    width: 100%;
+                    max-width: 1000px;
+                    margin: 0 auto;
+                    font-family: Arial, sans-serif;
+                    line-height: 1.5;
+                }
+                .text-content {
+                    margin-bottom: 1em;
+                }
+                .form-section {
+                    margin-bottom: 1em;
+                }
+                .form-row {
+                    display: flex;
+                    margin-bottom: 0.5em;
+                    gap: 1em;
+                }
+                .label {
+                    width: 200px;
+                    flex-shrink: 0;
+                }
+                .value {
+                    flex-grow: 1;
+                }
+                .data-table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin-bottom: 1em;
+                }
+                .data-table:not(.no-borders) td,
+                .data-table:not(.no-borders) th {
+                    border: 1px solid black;
+                    padding: 0.5em;
+                }
+                .no-borders td,
+                .no-borders th {
+                    border: none !important;
+                }
+                .header {
+                    text-align: right;
+                    margin-bottom: 20px;
+                }
+            </style>
+            """
+                             html_content = f"{css_styles}\n{html_content}"
+                         
+                         # Translate the extracted content
+                         translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                         content = translated_content
+                         total_pages = 1  # Treat as single page for simplicity
+                         
+                         translation_progress.totalPages = 1
+                         translation_progress.currentPage = 1
+                         translation_progress.progress = 100
+                         db.add(TranslationChunk(processId=process_id, content=content, pageNumber=1))
+                         db.commit()
+                         
+                     except Exception as gemini_err:
+                         print(f"⚠️ Direct Gemini approach failed: {str(gemini_err)}")
+                         print("Falling back to standard document processing methods...")
+                         # Fall back to the original document processing method
+                         html_content = await self.process_text_document(file_content, file_type)
+                         translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                         content = translated_content
+                         total_pages = 1
+                         
+                         translation_progress.totalPages = 1
+                         translation_progress.currentPage = 1
+                         translation_progress.progress = 100
+                         db.add(TranslationChunk(processId=process_id, content=content, pageNumber=1))
+                         db.commit()
+                     
+                 elif file_type in ["text/plain", "text/rtf", "application/rtf"]:
+                     # Process text files
+                     html_content = await self.process_text_document(file_content, file_type)
+                     translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                     content = translated_content
+                     total_pages = 1
+                     
+                     translation_progress.totalPages = 1
+                     translation_progress.currentPage = 1
+                     translation_progress.progress = 100
+                     db.add(TranslationChunk(processId=process_id, content=content, pageNumber=1))
+                     db.commit()
+                     
+                 else:
+                     # Process PDF files
+                     print("📄 Processing PDF file using in-memory approach...")
+     
+                     # Create a BytesIO object from the file content
+                     pdf_buffer = io.BytesIO(file_content)
+                     
+                     try:
+                         # Open PDF directly from memory
+                         with fitz.open(stream=pdf_buffer, filetype="pdf") as doc:
+                             translated_contents = []
+                             total_pages = len(doc)
+                             translation_progress.totalPages = total_pages
+                             db.commit()
+     
+                             for page_num in range(total_pages):
+                                 print(f"📖 Processing page {page_num + 1}/{total_pages}")
+                                 page = doc[page_num]
+     
+                                 # Update progress
+                                 translation_progress.currentPage = page_num + 1
+                                 translation_progress.progress = ((page_num + 1) / total_pages) * 100
+                                 db.commit()
+     
+                                 # Import translation_service here to avoid circular imports
+                                 from app.services.translation import translation_service
+                                 # Extract formatted content using the in-memory version
+                                 html_content = await translation_service._get_formatted_text_from_gemini_buffer(page)
+     
+                                 if html_content and len(html_content) > 50:
+                                     translated_content = await translation_service.translate_chunk(html_content, from_lang, to_lang)
+                                     if translated_content:
+                                         translated_contents.append(translated_content)
+                                         db.add(TranslationChunk(processId=process_id, content=translated_content, pageNumber=page_num + 1))
+                                         db.commit()
+                                     else:
+                                         print(f"⚠️ Translation failed for page {page_num + 1}")
+                                 else:
+                                     print(f"⚠️ No valid content extracted from page {page_num + 1}")
+     
+                             if not translated_contents:
+                                 translation_progress.status = "failed"
+                                 db.commit()
+                                 raise TranslationError("No content extracted and translated from the document", "CONTENT_ERROR")
+     
+                             content = translation_service.combine_html_content(translated_contents)
+     
+                     finally:
+                         # Ensure all resources are properly closed
+                         if 'pdf_buffer' in locals():
+                             pdf_buffer.close()
+                         
+                         # Force garbage collection
+                         gc.collect()
  
              # Final validation of the translation result
              if not content.strip():
@@ -210,233 +382,270 @@ class DocumentProcessingService:
                     temp_file_path = temp_file.name
                     
                 try:
-                    # Modified approach: Use direct text extraction instead of Gemini for first pass
+                    # Try direct Gemini approach first with PDF MIME type "trick"
                     try:
-                        # Try to use python-docx for DOCX files
-                        import docx
-                        doc = docx.Document(temp_file_path)
+                        prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML.
                         
-                        # Extract text from paragraphs
-                        paragraphs = []
-                        for para in doc.paragraphs:
-                            if para.text.strip():
-                                paragraphs.append(f"<p>{para.text}</p>")
+Note: This file may appear in an unusual format. Focus on extracting the actual content and structure regardless of how the binary content is presented."""
                         
-                        # Extract text from tables
-                        tables_html = []
-                        for table in doc.tables:
-                            table_html = "<table class='data-table'>"
-                            for row in table.rows:
-                                table_html += "<tr>"
-                                for cell in row.cells:
-                                    table_html += f"<td>{cell.text}</td>"
-                                table_html += "</tr>"
-                            table_html += "</table>"
-                            tables_html.append(table_html)
-                        
-                        # Combine content
-                        html_content = f"""
-                        <style>
-                            .document {{
-                                width: 100%;
-                                max-width: 1000px;
-                                margin: 0 auto;
-                                font-family: Arial, sans-serif;
-                                line-height: 1.5;
-                            }}
-                            .text-content {{
-                                margin-bottom: 1em;
-                            }}
-                            .data-table {{
-                                width: 100%;
-                                border-collapse: collapse;
-                                margin-bottom: 1em;
-                            }}
-                            .data-table td, .data-table th {{
-                                border: 1px solid black;
-                                padding: 0.5em;
-                            }}
-                        </style>
-                        <div class="document">
-                            {"".join(paragraphs)}
-                            {"".join(tables_html)}
-                        </div>
-                        """
-                        
-                        logger.info(f"Successfully extracted content from DOCX using python-docx")
-                        return html_content
-                        
-                    except Exception as docx_err:
-                        logger.warning(f"Failed to extract with python-docx: {str(docx_err)}, trying fallback method")
-                        
-                        # Fallback method - convert DOCX to PDF first, since Gemini supports PDF
-                        try:
-                            # Try to convert DOCX to PDF using a library like docx2pdf
-                            import subprocess
-                            
-                            # Create a temporary output PDF file
-                            pdf_output_path = temp_file_path + ".pdf"
-                            
-                            # Try using soffice (LibreOffice) for conversion if available
-                            try:
-                                # Check if soffice is available
-                                subprocess.run(["which", "soffice"], check=True, capture_output=True)
-                                
-                                # Use LibreOffice for conversion
-                                cmd = [
-                                    "soffice", 
-                                    "--headless", 
-                                    "--convert-to", "pdf", 
-                                    "--outdir", os.path.dirname(temp_file_path),
-                                    temp_file_path
-                                ]
-                                
-                                result = subprocess.run(cmd, capture_output=True, text=True)
-                                
-                                if result.returncode == 0:
-                                    pdf_output_path = os.path.splitext(temp_file_path)[0] + ".pdf"
-                                    logger.info(f"Successfully converted DOCX to PDF using LibreOffice")
-                                else:
-                                    raise Exception(f"LibreOffice conversion failed: {result.stderr}")
-                                    
-                            except subprocess.CalledProcessError:
-                                # LibreOffice not available, try alternative method
-                                logger.warning("LibreOffice not available, trying alternative conversion method")
-                                
-                                # Try using python-docx-pdf if installed
-                                try:
-                                    from docx2pdf import convert
-                                    convert(temp_file_path, pdf_output_path)
-                                    logger.info(f"Successfully converted DOCX to PDF using docx2pdf")
-                                except ImportError:
-                                    raise Exception("No DOCX to PDF conversion tool available")
-                            
-                            # Now extract text from the PDF, which Gemini does support
-                            with open(pdf_output_path, 'rb') as f:
-                                pdf_data = f.read()
-                            
-                            prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
-
-1. Content Organization:
-   - Maintain the original hierarchical structure (headers, sections, subsections)
-   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
-   - IMPORTANT: NEVER GENERATE HTML FOR IMAGES. ALWAYS SKIP IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. If around the image tehre's a text, translate text only.
-   - Preserve paragraph boundaries and logical content grouping
-   - Maintain chronological or numerical sequence where present
-   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
-   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
-   - DO NOT Include pages count. 
-   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
-
-2. Formatting Guidelines:
-   - Maintain all the styles, including bolden, italic or other types of formatting.
-   - Preserve tabular data relationships
-   - Maintain proper indentation to show hierarchical relationships
-   - Keep contextually related numbers, measurements, or values together with their labels
-
-3. Special Handling:
-   - For lists of measurements/values, keep all parameters and their values together
-   - For date-based content, ensure dates are formatted consistently as section headers
-   - For forms or structured data, preserve the relationship between fields and values
-   - For technical/scientific data, maintain the relationship between identifiers and their measurements
-   - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
-
-4. Layout Preservation:
-   - Identify when content is presented in columns and preserve column relationships
-   - Maintain spacing that indicates logical grouping in the original
-   - Preserve the flow of information in a way that maintains readability
-
-5. HTML Considerations:
-   - Properly handle tables by maintaining row and column relationships
-   - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
-   - Ensure any HTML output is valid and properly nested
-   - Make sure text has paragraphs and they are not together, but logically splited with <p> and <br> tags so the text is readable. 
-   
-Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
-                            
-                            # Use Gemini with the PDF, which is a supported format
-                            response = translation_service.extraction_model.generate_content(
-                                contents=[
-                                    prompt,
-                                    {
-                                        "mime_type": "application/pdf", 
-                                        "data": pdf_data
-                                    }
-                                ],
-                                generation_config={"temperature": 0.1}
-                            )
-                            
-                            # Clean up the temporary PDF
-                            if os.path.exists(pdf_output_path):
-                                os.remove(pdf_output_path)
-                                
-                        except Exception as pdf_conversion_error:
-                            logger.error(f"PDF conversion failed: {str(pdf_conversion_error)}")
-                            
-                            # Last resort: Extract just the text and send as plain text to Gemini
-                            import docx
-                            doc = docx.Document(temp_file_path)
-                            plain_text = "\n\n".join([para.text for para in doc.paragraphs if para.text.strip()])
-                            
-                            # For tables, extract and add with clear markers
-                            for table in doc.tables:
-                                plain_text += "\n\n--- TABLE START ---\n"
-                                for i, row in enumerate(table.rows):
-                                    row_text = " | ".join([cell.text.strip() for cell in row.cells])
-                                    plain_text += row_text + "\n"
-                                plain_text += "--- TABLE END ---\n\n"
-                            
-                            prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
-
-1. Content Organization:
-   - Maintain the original hierarchical structure (headers, sections, subsections)
-   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
-   - IMPORTANT: NEVER GENERATE HTML FOR IMAGES. ALWAYS SKIP IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. If around the image tehre's a text, translate text only.
-   - Preserve paragraph boundaries and logical content grouping
-   - Maintain chronological or numerical sequence where present
-   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
-   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
-   - DO NOT Include pages count. 
-   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
-
-2. Formatting Guidelines:
-   - Maintain all the styles, including bolden, italic or other types of formatting.
-   - Preserve tabular data relationships
-   - Maintain proper indentation to show hierarchical relationships
-   - Keep contextually related numbers, measurements, or values together with their labels
-
-3. Special Handling:
-   - For lists of measurements/values, keep all parameters and their values together
-   - For date-based content, ensure dates are formatted consistently as section headers
-   - For forms or structured data, preserve the relationship between fields and values
-   - For technical/scientific data, maintain the relationship between identifiers and their measurements
-   - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
-
-4. Layout Preservation:
-   - Identify when content is presented in columns and preserve column relationships
-   - Maintain spacing that indicates logical grouping in the original
-   - Preserve the flow of information in a way that maintains readability
-
-5. HTML Considerations:
-   - Properly handle tables by maintaining row and column relationships
-   - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
-   - Ensure any HTML output is valid and properly nested
-   - Make sure text has paragraphs and they are not together, but logically splited with <p> and <br> tags so the text is readable. 
-   
-Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
-                            
-                            # Send the plain text to Gemini
-                            response = translation_service.extraction_model.generate_content(
-                                prompt + "\n\n" + plain_text,
-                                generation_config={"temperature": 0.1}
-                            )
+                        # Send to Gemini using PDF MIME type for DOCX content
+                        response = translation_service.extraction_model.generate_content(
+                            contents=[
+                                prompt,
+                                {
+                                    "mime_type": "application/pdf", 
+                                    "data": file_content
+                                }
+                            ],
+                            generation_config={"temperature": 0.1}
+                        )
                         
                         html_content = response.text.strip()
                         html_content = html_content.replace('```html', '').replace('```', '').strip()
                         
-                        # Add CSS styles if needed
-                        if '<style>' not in html_content:
-                            css_styles = """
+                        if not html_content or len(html_content) < 100:
+                            raise Exception("Insufficient content returned, falling back to standard methods")
+                            
+                        logger.info(f"Successfully extracted content using Gemini PDF trick: {len(html_content)} chars")
+                        return html_content
+                        
+                    except Exception as gemini_err:
+                        logger.warning(f"Direct Gemini approach failed: {str(gemini_err)}, trying fallback methods")
+                        
+                        # Proceed with existing fallback methods
+                        # Modified approach: Use direct text extraction instead of Gemini for first pass
+                        try:
+                            # Try to use python-docx for DOCX files
+                            import docx
+                            doc = docx.Document(temp_file_path)
+                            
+                            # Extract text from paragraphs
+                            paragraphs = []
+                            for para in doc.paragraphs:
+                                if para.text.strip():
+                                    paragraphs.append(f"<p>{para.text}</p>")
+                            
+                            # Extract text from tables
+                            tables_html = []
+                            for table in doc.tables:
+                                table_html = "<table class='data-table'>"
+                                for row in table.rows:
+                                    table_html += "<tr>"
+                                    for cell in row.cells:
+                                        table_html += f"<td>{cell.text}</td>"
+                                    table_html += "</tr>"
+                                table_html += "</table>"
+                                tables_html.append(table_html)
+                            
+                            # Combine content
+                            html_content = f"""
+                            <style>
+                                .document {{
+                                    width: 100%;
+                                    max-width: 1000px;
+                                    margin: 0 auto;
+                                    font-family: Arial, sans-serif;
+                                    line-height: 1.5;
+                                }}
+                                .text-content {{
+                                    margin-bottom: 1em;
+                                }}
+                                .data-table {{
+                                    width: 100%;
+                                    border-collapse: collapse;
+                                    margin-bottom: 1em;
+                                }}
+                                .data-table td, .data-table th {{
+                                    border: 1px solid black;
+                                    padding: 0.5em;
+                                }}
+                            </style>
+                            <div class="document">
+                                {"".join(paragraphs)}
+                                {"".join(tables_html)}
+                            </div>
+                            """
+                            
+                            logger.info(f"Successfully extracted content from DOCX using python-docx")
+                            return html_content
+                            
+                        except Exception as docx_err:
+                            logger.warning(f"Failed to extract with python-docx: {str(docx_err)}, trying fallback method")
+                            
+                            # Fallback method - convert DOCX to PDF first, since Gemini supports PDF
+                            try:
+                                # Try to convert DOCX to PDF using a library like docx2pdf
+                                import subprocess
+                                
+                                # Create a temporary output PDF file
+                                pdf_output_path = temp_file_path + ".pdf"
+                                
+                                # Try using soffice (LibreOffice) for conversion if available
+                                try:
+                                    # Check if soffice is available
+                                    subprocess.run(["which", "soffice"], check=True, capture_output=True)
+                                    
+                                    # Use LibreOffice for conversion
+                                    cmd = [
+                                        "soffice", 
+                                        "--headless", 
+                                        "--convert-to", "pdf", 
+                                        "--outdir", os.path.dirname(temp_file_path),
+                                        temp_file_path
+                                    ]
+                                    
+                                    result = subprocess.run(cmd, capture_output=True, text=True)
+                                    
+                                    if result.returncode == 0:
+                                        pdf_output_path = os.path.splitext(temp_file_path)[0] + ".pdf"
+                                        logger.info(f"Successfully converted DOCX to PDF using LibreOffice")
+                                    else:
+                                        raise Exception(f"LibreOffice conversion failed: {result.stderr}")
+                                        
+                                except subprocess.CalledProcessError:
+                                    # LibreOffice not available, try alternative method
+                                    logger.warning("LibreOffice not available, trying alternative conversion method")
+                                    
+                                    # Try using python-docx-pdf if installed
+                                    try:
+                                        from docx2pdf import convert
+                                        convert(temp_file_path, pdf_output_path)
+                                        logger.info(f"Successfully converted DOCX to PDF using docx2pdf")
+                                    except ImportError:
+                                        raise Exception("No DOCX to PDF conversion tool available")
+                                
+                                # Now extract text from the PDF, which Gemini does support
+                                with open(pdf_output_path, 'rb') as f:
+                                    pdf_data = f.read()
+                                
+                                prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
+
+1. Content Organization:
+   - Maintain the original hierarchical structure (headers, sections, subsections)
+   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
+   - IMPORTANT: NEVER GENERATE HTML FOR IMAGES. ALWAYS SKIP IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. If around the image tehre's a text, translate text only.
+   - Preserve paragraph boundaries and logical content grouping
+   - Maintain chronological or numerical sequence where present
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
+   - DO NOT Include pages count. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
+
+2. Formatting Guidelines:
+   - Maintain all the styles, including bolden, italic or other types of formatting.
+   - Preserve tabular data relationships
+   - Maintain proper indentation to show hierarchical relationships
+   - Keep contextually related numbers, measurements, or values together with their labels
+
+3. Special Handling:
+   - For lists of measurements/values, keep all parameters and their values together
+   - For date-based content, ensure dates are formatted consistently as section headers
+   - For forms or structured data, preserve the relationship between fields and values
+   - For technical/scientific data, maintain the relationship between identifiers and their measurements
+   - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
+
+4. Layout Preservation:
+   - Identify when content is presented in columns and preserve column relationships
+   - Maintain spacing that indicates logical grouping in the original
+   - Preserve the flow of information in a way that maintains readability
+
+5. HTML Considerations:
+   - Properly handle tables by maintaining row and column relationships
+   - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
+   - Ensure any HTML output is valid and properly nested
+   - Make sure text has paragraphs and they are not together, but logically splited with <p> and <br> tags so the text is readable. 
+   
+Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
+                                
+                                # Use Gemini with the PDF, which is a supported format
+                                response = translation_service.extraction_model.generate_content(
+                                    contents=[
+                                        prompt,
+                                        {
+                                            "mime_type": "application/pdf", 
+                                            "data": pdf_data
+                                        }
+                                    ],
+                                    generation_config={"temperature": 0.1}
+                                )
+                                
+                                html_content = response.text.strip()
+                                html_content = html_content.replace('```html', '').replace('```', '').strip()
+                                
+                                # Clean up the temporary PDF
+                                if os.path.exists(pdf_output_path):
+                                    os.remove(pdf_output_path)
+                                    
+                                logger.info(f"Successfully extracted HTML content via PDF conversion: {len(html_content)} chars")
+                                return html_content
+                                    
+                            except Exception as pdf_conversion_error:
+                                logger.error(f"PDF conversion failed: {str(pdf_conversion_error)}")
+                                
+                                # Last resort: Extract just the text and send as plain text to Gemini
+                                import docx
+                                doc = docx.Document(temp_file_path)
+                                plain_text = "\n\n".join([para.text for para in doc.paragraphs if para.text.strip()])
+                                
+                                # For tables, extract and add with clear markers
+                                for table in doc.tables:
+                                    plain_text += "\n\n--- TABLE START ---\n"
+                                    for i, row in enumerate(table.rows):
+                                        row_text = " | ".join([cell.text.strip() for cell in row.cells])
+                                        plain_text += row_text + "\n"
+                                    plain_text += "--- TABLE END ---\n\n"
+                                
+                                prompt = """You are a professional multilanguage translator with a deep knowledge of HTML. Analyze this document and extract its content with precise structural preservation, extracting the content and formatting it in HTML:
+
+1. Content Organization:
+   - Maintain the original hierarchical structure (headers, sections, subsections)
+   - IMPORTANT: In cases where the structure is messy, or you can't understand the structure of analyzed document, or if the document is unstructured, make sure to add some structure at your discretion to make the text readable.
+   - IMPORTANT: NEVER GENERATE HTML FOR IMAGES. ALWAYS SKIP IMAGES. IF there is an image inside the document, JUST STKIP IT. Process text only, and it's formatting. The Output Must never have any <img. tags, if the image without any text is identified, skip it. If around the image tehre's a text, translate text only.
+   - Preserve paragraph boundaries and logical content grouping
+   - Maintain chronological or numerical sequence where present
+   - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
+   - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
+   - DO NOT Include pages count. 
+   - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Bullets must be simple regardless of how they are presented in the document. Just simple bullets.
+
+2. Formatting Guidelines:
+   - Maintain all the styles, including bolden, italic or other types of formatting.
+   - Preserve tabular data relationships
+   - Maintain proper indentation to show hierarchical relationships
+   - Keep contextually related numbers, measurements, or values together with their labels
+
+3. Special Handling:
+   - For lists of measurements/values, keep all parameters and their values together
+   - For date-based content, ensure dates are formatted consistently as section headers
+   - For forms or structured data, preserve the relationship between fields and values
+   - For technical/scientific data, maintain the relationship between identifiers and their measurements
+   - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
+
+4. Layout Preservation:
+   - Identify when content is presented in columns and preserve column relationships
+   - Maintain spacing that indicates logical grouping in the original
+   - Preserve the flow of information in a way that maintains readability
+
+5. HTML Considerations:
+   - Properly handle tables by maintaining row and column relationships
+   - When converting to HTML, use semantic tags to represent the document structure (<h1>, <p>, <ul>, <table>, etc.)
+   - Ensure any HTML output is valid and properly nested
+   - Make sure text has paragraphs and they are not together, but logically splited with <p> and <br> tags so the text is readable. 
+   
+Extract the content so it looks like in the initial document as much as possible. The result should be clean, structured text that accurately represents the original document's organization and information hierarchy."""
+                                
+                                # Send the plain text to Gemini
+                                response = translation_service.extraction_model.generate_content(
+                                    prompt + "\n\n" + plain_text,
+                                    generation_config={"temperature": 0.1}
+                                )
+                            
+                                html_content = response.text.strip()
+                                html_content = html_content.replace('```html', '').replace('```', '').strip()
+                                
+                                # Add CSS styles if needed
+                                if '<style>' not in html_content:
+                                    css_styles = """
             <style>
                 .document {
                     width: 100%;
@@ -483,23 +692,23 @@ Extract the content so it looks like in the initial document as much as possible
                 }
             </style>
             """
-                            html_content = f"{css_styles}\n{html_content}"
-                        
-                        # Process and normalize index numbers
-                        soup = BeautifulSoup(html_content, 'html.parser')
-                        for index_div in soup.find_all(class_='index'):
-                            index_text = index_div.get_text().strip()
-                            # Use the local normalize_index method
-                            corrected_index = self.normalize_index(index_text) if hasattr(self, 'normalize_index') else index_text
-                            if corrected_index != index_text:
-                                index_div.string = corrected_index
+                                    html_content = f"{css_styles}\n{html_content}"
                                 
-                        html_content = str(soup)
-                        
-                        logger.info(f"Successfully extracted HTML content from document using base64 encoding: {len(html_content)} chars")
-                        
-                        return html_content
-                    
+                                # Process and normalize index numbers
+                                soup = BeautifulSoup(html_content, 'html.parser')
+                                for index_div in soup.find_all(class_='index'):
+                                    index_text = index_div.get_text().strip()
+                                    # Use the local normalize_index method
+                                    corrected_index = self.normalize_index(index_text) if hasattr(self, 'normalize_index') else index_text
+                                    if corrected_index != index_text:
+                                        index_div.string = corrected_index
+                                        
+                                html_content = str(soup)
+                                
+                                logger.info(f"Successfully extracted HTML content from document using plain text extraction: {len(html_content)} chars")
+                                
+                                return html_content
+                            
                 except Exception as e:
                     logger.error(f"Error processing document: {str(e)}")
                     # Create a basic fallback HTML content
