@@ -37,8 +37,8 @@ class TranslationService:
         # Initialize Google Gemini
         if settings.GOOGLE_API_KEY:
             self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-            self.extraction_model = "gemini-2.0-flash"
-            self.translation_model = "gemini-2.0-flash"
+            self.extraction_model = "gemini-2.5-pro-preview-03-25"
+            self.translation_model = "gemini-2.5-pro-preview-03-25"
             logger.info("Initialized Google Gemini 2.5 client for extraction and translation")
         else:
             self.client = None
@@ -896,6 +896,7 @@ STRICT AND CRITICAL RULES:
    - Brand and company names
    - Technical standards (like EN 14411:2016) - but make sure to translate technical descriptions always
    - Unit measurements and technical values (like NPD, N/mm2, etc.)
+10. Ensure that sentences are logical and understandable. You can rearrange words positions within the sentence but make sure it sounds well for the language you are translating to.
 
 Here is the HTML with text to translate:
 
