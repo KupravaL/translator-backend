@@ -14,8 +14,8 @@ engine = create_engine(
     db_url,
     connect_args={"sslmode": "require"},
     # Connection pool settings
-    pool_size=10,              # Default pool size
-    max_overflow=20,           # Allow 20 connections beyond pool_size
+    pool_size=5,              # Default pool size
+    max_overflow=10,           # Allow 10 connections beyond pool_size
     pool_timeout=30,           # Timeout waiting for a connection from pool
     pool_recycle=1800,         # Recycle connections every 30 minutes
     pool_pre_ping=True         # Verify connections before using them
@@ -33,6 +33,10 @@ Base = declarative_base()
 
 # Dependency to get DB session
 def get_db():
+    """
+    Dependency for getting DB session.
+    Yields a database session and ensures it's closed after use.
+    """
     db = SessionLocal()
     try:
         yield db

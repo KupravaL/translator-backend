@@ -14,9 +14,10 @@ import io
 import asyncio
 import nest_asyncio
 import hashlib
-from google import genai
-from google.genai import types
+from google import generativeai as genai
+from google.generativeai import types
 import base64
+from app.services.translation.base import BaseTranslationService
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +33,7 @@ class TranslationError(Exception):
         self.code = code
         self.name = 'TranslationError'
 
-class TranslationService:
+class TranslationService(BaseTranslationService):
     def __init__(self):
         # Initialize Google Gemini
         if settings.GOOGLE_API_KEY:
@@ -51,7 +52,7 @@ class TranslationService:
         self.translation_cache = {}
         
         # Set maximum request timeout
-        self.api_timeout = 45  # 45 seconds per request max
+        self.api_timeout = 30  # 30 seconds per request max (reduced from 45)
         
         # Language-specific configuration - uniform approach for all languages
         self.language_config = {
@@ -520,6 +521,12 @@ Extract the content so it looks like in the initial document as much as possible
         start_time = time.time()
         logger.info(f"[EXTRACT DEBUG] Starting extraction for page {page_index + 1}")
         
+        # Check cache first
+        cache_key = f"extract_page_{page_index}"
+        if cache_key in self.extraction_cache:
+            logger.info(f"[EXTRACT DEBUG] Cache hit for page {page_index + 1}, returning cached content")
+            return self.extraction_cache[cache_key]
+        
         # Read PDF in memory without creating a file
         try:
             # Create an in-memory buffer for the PDF content
@@ -540,6 +547,31 @@ Extract the content so it looks like in the initial document as much as possible
                 
                 # Extract text from page for diagnostics
                 raw_text = page.get_text()
+                
+                # Fast path for text-only PDFs - skip Gemini for simple text content
+                if raw_text and len(raw_text.strip()) > 100 and not page.get_images():
+                    # Check if the text is simple enough to not need Gemini
+                    # Simple heuristic: Check if it has tables or complex formatting
+                    has_complex_formatting = "│" in raw_text or "┌" in raw_text or "┐" in raw_text or "└" in raw_text or "┘" in raw_text
+                    has_tables = raw_text.count("\t") > 5  # Crude check for tables
+                    
+                    if not has_complex_formatting and not has_tables:
+                        logger.info(f"[EXTRACT DEBUG] Fast path: Using direct text extraction for simple page {page_index + 1}")
+                        # Format the raw text directly without Gemini
+                        from html import escape
+                        escaped_text = escape(raw_text)
+                        
+                        # Format paragraphs
+                        paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
+                        formatted_content = ""
+                        for p in paragraphs:
+                            formatted_content += f"<p class='text-content'>{p}</p>\n"
+                        
+                        content = f"<div class='page'>{formatted_content}</div>"
+                        self.extraction_cache[cache_key] = content
+                        logger.info(f"[EXTRACT DEBUG] Fast path extraction completed for page {page_index + 1} in {time.time() - start_time:.2f} seconds")
+                        return content
+                
                 if raw_text:
                     logger.info(f"Page {page_index + 1} contains {len(raw_text)} chars of raw text")
                     text_sample = raw_text[:100].replace('\n', ' ')
@@ -574,6 +606,9 @@ Extract the content so it looks like in the initial document as much as possible
                     # Ensure content has proper wrapper
                     html_content = f"<div class='page'>{html_content}</div>"
                     logger.info(f"Added missing page wrapper to content")
+                
+                # Cache the result
+                self.extraction_cache[cache_key] = html_content
                 
                 logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
                 logger.info(f"Page extraction took {time.time() - start_time:.2f} seconds")
@@ -652,87 +687,73 @@ Extract the content so it looks like in the initial document as much as possible
         
         # Create a pixmap with improved resolution for better text extraction
         try:
-            # Reduced resolution for faster processing
-            pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(1.5, 1.5))
+            # Use ultra-low resolution for faster processing
+            # 1.0 = screen resolution, lower is faster but less accurate
+            pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(1.0, 1.0))
             logger.info(f"[GEMINI DEBUG] Created pixmap for page {page_index + 1}")
-            
+
             # Convert pixmap to bytes in memory
             img_bytes = pix.tobytes(output="png")
             logger.info(f"[GEMINI DEBUG] Converted pixmap to bytes, size: {len(img_bytes)} bytes")
-            
+
+            # Ultra concise prompt for faster processing
+            prompt = """Extract text from document as clean HTML. Use basic tags (<div>, <p>, <h1-h6>). Preserve structure. Return only HTML with <div class=\"page\"> wrapper."""
+
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=prompt),
+                        # Fix: Use correct MIME type for PNG image
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+                    ],
+                ),
+            ]
+
+            generation_config = types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="text/plain",
+                max_output_tokens=4096  # Limit token count for faster response
+            )
+
+            logger.info(f"[GEMINI DEBUG] Sending request to Gemini API for page {page_index + 1}")
+
+            # Set up a timeout for the API call using asyncio
+            api_call_task = self.client.models.generate_content(
+                model=self.extraction_model,
+                contents=contents,
+                config=generation_config
+            )
+
+            # Add timeout
             try:
-                prompt = """You are a professional HTML coder. Extract text from the document, preserving the text and basic structure. Convert to clean, semantic HTML.
+                response = await asyncio.wait_for(api_call_task, timeout=self.api_timeout)
+                logger.info(f"[GEMINI DEBUG] Received response from Gemini API for page {page_index + 1}")
+            except asyncio.TimeoutError:
+                logger.error(f"[GEMINI DEBUG] Gemini API request timed out after {self.api_timeout}s for page {page_index + 1}")
+                raise TranslationError(f"Gemini API request timed out after {self.api_timeout}s", "TIMEOUT")
+            except Exception as api_error:
+                # Check specifically for rate limit errors
+                error_str = str(api_error)
+                if "429" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
+                    logger.error(f"[GEMINI DEBUG] RATE LIMIT DETECTED for page {page_index + 1}: {error_str}")
+                    # Wait a bit longer before retrying on rate limits
+                    time.sleep(5)
+                    raise TranslationError(f"Gemini API rate limit exceeded: {error_str}", "RATE_LIMIT")
+                else:
+                    logger.error(f"[GEMINI DEBUG] API error for page {page_index + 1}: {error_str}")
+                    raise
 
-Key requirements:
-1. Structure Analysis:
-   - Use semantic HTML5 elements (<div>, <p>, <h1>-<h6>)
-   - Only use <table> for actual tabular data
-   - Preserve formatting (bold, italic, etc.)
-   - Format lists with proper list items
-   - Use proper <div class="page"> wrapper
+            # Check if the response has text - handle empty responses
+            if not hasattr(response, 'text') or not response.text:
+                logger.error(f"[GEMINI DEBUG] Empty response from Gemini API for page {page_index + 1}")
+                raise TranslationError("Empty response from Gemini API", "EMPTY_RESPONSE")
 
-2. Return only HTML:
-   - Do not add any comments, explanations or notes
-   - Return only the converted HTML
-   - Keep all text content
-   - Preserve paragraph structure
+            html_content = response.text.strip()
+            html_content = html_content.replace('```html', '').replace('```', '').strip()
 
-3. Ensure page contains properly structured content with semantic elements."""
-
-                contents = [
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_text(text=prompt),
-                            # Fix: Use correct MIME type for PNG image
-                            types.Part.from_bytes(data=img_bytes, mime_type="image/png")
-                        ],
-                    ),
-                ]
-                
-                generation_config = types.GenerateContentConfig(
-                    temperature=0.1,
-                    response_mime_type="text/plain"
-                )
-                
-                logger.info(f"[GEMINI DEBUG] Sending request to Gemini API for page {page_index + 1}")
-                
-                # Set up a timeout for the API call using asyncio
-                api_call_task = self.client.models.generate_content(
-                    model=self.extraction_model,
-                    contents=contents,
-                    config=generation_config
-                )
-                
-                # Add timeout
-                try:
-                    response = await asyncio.wait_for(api_call_task, timeout=self.api_timeout)
-                    logger.info(f"[GEMINI DEBUG] Received response from Gemini API for page {page_index + 1}")
-                except asyncio.TimeoutError:
-                    logger.error(f"[GEMINI DEBUG] Gemini API request timed out after {self.api_timeout}s for page {page_index + 1}")
-                    raise TranslationError(f"Gemini API request timed out after {self.api_timeout}s", "TIMEOUT")
-                except Exception as api_error:
-                    # Check specifically for rate limit errors
-                    error_str = str(api_error)
-                    if "429" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
-                        logger.error(f"[GEMINI DEBUG] RATE LIMIT DETECTED for page {page_index + 1}: {error_str}")
-                        # Wait a bit longer before retrying on rate limits
-                        time.sleep(5)
-                        raise TranslationError(f"Gemini API rate limit exceeded: {error_str}", "RATE_LIMIT")
-                    else:
-                        logger.error(f"[GEMINI DEBUG] API error for page {page_index + 1}: {error_str}")
-                        raise
-                
-                # Check if the response has text - handle empty responses
-                if not hasattr(response, 'text') or not response.text:
-                    logger.error(f"[GEMINI DEBUG] Empty response from Gemini API for page {page_index + 1}")
-                    raise TranslationError("Empty response from Gemini API", "EMPTY_RESPONSE")
-                
-                html_content = response.text.strip()
-                html_content = html_content.replace('```html', '').replace('```', '').strip()
-                
-                # Add enhanced CSS styles
-                css_styles = """
+            # Add enhanced CSS styles
+            css_styles = """
     <style>
         .document {
             width: 100%;
@@ -779,74 +800,67 @@ Key requirements:
         }
     </style>
     """
-                if '<style>' not in html_content:
-                    html_content = f"{css_styles}\n{html_content}"
-                
-                # Process and normalize index numbers
-                soup = BeautifulSoup(html_content, 'html.parser')
-                for index_div in soup.find_all(class_='index'):
-                    index_text = index_div.get_text().strip()
-                    corrected_index = self.normalize_index(index_text)
-                    if corrected_index != index_text:
-                        index_div.string = corrected_index
-                        
-                html_content = str(soup)
-                logger.info(f"[GEMINI DEBUG] Processed HTML content for page {page_index + 1}")
-                
-                # Enhanced validation to ensure we have actual content
-                text_content = re.sub(r'<[^>]+>', '', html_content).strip()
-                if len(html_content) < 50 or '<' not in html_content or not text_content:
-                    logger.error(f"[GEMINI DEBUG] Invalid or insufficient content extracted from page {page_index + 1}")
-                    # Fall back to simpler extraction but don't return empty
-                    text = page.get_text()
-                    if text and len(text.strip()) > 0:
-                        # Fix 2: Properly escape HTML in text extraction fallback
-                        from html import escape
-                        escaped_text = escape(text)
-                        paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
-                        formatted_content = ""
-                        for p in paragraphs:
-                            formatted_content += f"<p class='text-content'>{p}</p>\n"
-                        logger.info(f"[GEMINI DEBUG] Using fallback text extraction for page {page_index + 1}")
-                        return f"<div class='page'>{formatted_content}</div>"
-                    else:
-                        # If truly empty, create a placeholder saying so
-                        logger.warning(f"[GEMINI DEBUG] Using empty page placeholder for page {page_index + 1}")
-                        return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
-                
-                logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
-                
-                # Cache the result
-                self.extraction_cache[cache_key] = html_content
-                
-                return html_content
-                
-            except Exception as e:
-                logger.error(f"[GEMINI DEBUG] Error in Gemini processing for page {page_index + 1}: {e}")
-                # Fix 3: Improved fallback logic for text extraction
-                try:
-                    text = page.get_text()
-                    logger.warning(f"[GEMINI DEBUG] Falling back to plain text extraction for page {page_index + 1} ({len(text)} chars)")
-                    
-                    # Better handling of fallback text
-                    if text and len(text.strip()) > 0:
-                        from html import escape
-                        escaped_text = escape(text)
-                        # Split text into paragraphs and preserve structure
-                        paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
-                        formatted_content = ""
-                        for p in paragraphs:
-                            formatted_content += f"<p class='text-content'>{p}</p>\n"
-                        return f"<div class='page'>{formatted_content}</div>"
-                    else:
-                        # Create meaningful placeholder for empty pages
-                        return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
-                except Exception as text_error:
-                    logger.error(f"[GEMINI DEBUG] Fallback text extraction also failed: {text_error}")
-                    return "<div class='page'><p class='text-content'>Error processing this page: couldn't extract content.</p></div>"
-        except Exception as pixmap_error:
-            logger.error(f"[GEMINI DEBUG] Error creating pixmap for page {page_index + 1}: {str(pixmap_error)}")
-            raise
+            if '<style>' not in html_content:
+                html_content = f"{css_styles}\n{html_content}"
+
+            # Process and normalize index numbers
+            soup = BeautifulSoup(html_content, 'html.parser')
+            for index_div in soup.find_all(class_='index'):
+                index_text = index_div.get_text().strip()
+                corrected_index = self.normalize_index(index_text)
+                if corrected_index != index_text:
+                    index_div.string = corrected_index
+
+            html_content = str(soup)
+            logger.info(f"[GEMINI DEBUG] Processed HTML content for page {page_index + 1}")
+
+            # Enhanced validation to ensure we have actual content
+            text_content = re.sub(r'<[^>]+>', '', html_content).strip()
+            if len(html_content) < 50 or '<' not in html_content or not text_content:
+                logger.error(f"[GEMINI DEBUG] Invalid or insufficient content extracted from page {page_index + 1}")
+                # Fall back to simpler extraction but don't return empty
+                text = page.get_text()
+                if text and len(text.strip()) > 0:
+                    # Fix 2: Properly escape HTML in text extraction fallback
+                    from html import escape
+                    escaped_text = escape(text)
+                    paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
+                    formatted_content = ""
+                    for p in paragraphs:
+                        formatted_content += f"<p class='text-content'>{p}</p>\n"
+                    return f"<div class='page'>{formatted_content}</div>"
+                else:
+                    # If truly empty, create a placeholder saying so
+                    logger.warning(f"[GEMINI DEBUG] Using empty page placeholder for page {page_index + 1}")
+                    return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
+
+            logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
+            # Cache the result
+            self.extraction_cache[cache_key] = html_content
+            return html_content
+
+        except Exception as e:
+            logger.error(f"[GEMINI DEBUG] Error in Gemini processing for page {page_index + 1}: {e}")
+            # Fix 3: Improved fallback logic for text extraction
+            try:
+                text = page.get_text()
+                logger.warning(f"[GEMINI DEBUG] Falling back to plain text extraction for page {page_index + 1} ({len(text)} chars)")
+                # Better handling of fallback text
+                if text and len(text.strip()) > 0:
+                    from html import escape
+                    escaped_text = escape(text)
+                    # Split text into paragraphs and preserve structure
+                    paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
+                    formatted_content = ""
+                    for p in paragraphs:
+                        formatted_content += f"<p class='text-content'>{p}</p>\n"
+                    return f"<div class='page'>{formatted_content}</div>"
+                else:
+                    # Create meaningful placeholder for empty pages
+                    return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
+            except Exception as text_error:
+                logger.error(f"[GEMINI DEBUG] Fallback text extraction also failed: {text_error}")
+                return "<div class='page'><p class='text-content'>Error processing this page: couldn't extract content.</p></div>"
         finally:
             # Clean up resources
             try:
@@ -859,7 +873,6 @@ Key requirements:
                 logger.debug(f"[GEMINI DEBUG] Resources cleaned up for page {page_index + 1}")
             except Exception as cleanup_error:
                 logger.warning(f"[GEMINI DEBUG] Error during cleanup for page {page_index + 1}: {str(cleanup_error)}")
-            
             logger.info(f"[GEMINI DEBUG] Total processing time for page {page_index + 1}: {time.time() - page_start_time:.2f} seconds")
 
     async def _get_formatted_text_from_gemini(self, page):
@@ -878,7 +891,7 @@ Key requirements:
         
         if not chunk_id:
             chunk_id = f"{hashlib.md5(html_content.encode()).hexdigest()}"[:7]
-        
+                
         # Check cache first
         cache_key = f"translate_{chunk_id}_{from_lang}_{to_lang}"
         if cache_key in self.translation_cache:
@@ -890,6 +903,19 @@ Key requirements:
         # Get the proper language display name (for better prompting)
         to_lang_display = self.get_language_display_name(to_lang)
         logger.info(f"Starting translation of chunk {chunk_id} ({len(html_content)} chars) to {to_lang_display}")
+        
+        # Skip translation for very short content (likely just formatting)
+        if len(html_content) < 50 or html_content.count('<') > len(html_content) / 4:
+            logger.info(f"Skipping translation for tiny or format-only chunk {chunk_id}")
+            self.translation_cache[cache_key] = html_content
+            return html_content
+            
+        # Quick check if there's any actual text to translate
+        text_content = re.sub(r'<[^>]+>', '', html_content).strip()
+        if not text_content or len(text_content) < 20:
+            logger.info(f"Chunk {chunk_id} has insufficient text content to translate, returning original")
+            self.translation_cache[cache_key] = html_content
+            return html_content
         
         # Save original HTML for comparison and fallback
         original_html = html_content
@@ -914,27 +940,10 @@ Key requirements:
                         logger.info(f"Chunk {chunk_id} content preview (end): ... {chunk_preview_end}")
                     logger.info(f"Chunk {chunk_id} content length: {len(html_content_with_tags)} chars")
                 
-                # Create a unified prompt for all languages with strong anti-placeholder instructions
-                prompt = f"""You are a professional translator with a knowledge of HTML. Translate all text content in this HTML to {to_lang_display}.
+                # Create a very concise prompt for translation
+                prompt = f"""Translate HTML to {to_lang_display}. Keep all tags. Translate ONLY text content.
 
-STRICT AND CRITICAL RULES:
-1. Translate ALL text content to {to_lang_display} regardless of what language it's in
-2. DO NOT replace any words with placeholders like '$variable' or similar patterns
-3. PRESERVE ALL HTML tags, attributes, CSS classes, and structure EXACTLY as they are in the initial text
-4. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML
-5. Keep all spacing, indentation, and formatting consistent with the input
-6. Ensure your output is valid HTML that can be rendered directly in a browser AND Google Docs/Word
-7. DO NOT translate content within HTML comments marked with <!--PRESERVE--> and <!--/PRESERVE-->
-8. DO NOT translate content within <style> tags - they are used for document styling and will be parsed by front
-9. Don't translate these specific items:
-   - Technical codes and identifiers (like product IDs, registration numbers)
-   - Email addresses and URLs
-   - Brand and company names
-   - Technical standards (like EN 14411:2016) - but make sure to translate technical descriptions always
-   - Unit measurements and technical values (like NPD, N/mm2, etc.)
-10. Ensure that sentences are logical and understandable. You can rearrange words positions within the sentence but make sure it sounds well for the language you are translating to.
-
-Here is the HTML with text to translate:
+HTML to translate:
 
 {html_content_with_tags}
 """
@@ -951,21 +960,43 @@ Here is the HTML with text to translate:
                 ]
 
                 generation_config = types.GenerateContentConfig(
-                    temperature=lang_config.get("temperature", 0.15),
+                    temperature=lang_config.get("temperature", 0),  # Use 0 temperature for deterministic output
                     top_p=lang_config.get("top_p", 0.97),
                     top_k=lang_config.get("top_k", 45),
                     max_output_tokens=lang_config.get("max_output_tokens", 8192),
                     response_mime_type="text/plain"
                 )
 
-                response = self.client.models.generate_content(
+                # Set up a timeout for the API call using asyncio
+                api_call_task = self.client.models.generate_content(
                     model=self.translation_model,
                     contents=contents,
                     config=generation_config
                 )
                 
-                translation_duration = time.time() - translation_start
-                logger.info(f"Gemini completed translation for chunk {chunk_id} in {translation_duration:.2f} seconds")
+                # Add timeout
+                try:
+                    response = await asyncio.wait_for(api_call_task, timeout=self.api_timeout)
+                    logger.info(f"Gemini completed translation for chunk {chunk_id} in {time.time() - translation_start:.2f} seconds")
+                except asyncio.TimeoutError:
+                    logger.error(f"Gemini API request timed out after {self.api_timeout}s for chunk {chunk_id}")
+                    raise TranslationError(f"Gemini API request timed out after {self.api_timeout}s", "TIMEOUT")
+                except Exception as api_error:
+                    # Check specifically for rate limit errors
+                    error_str = str(api_error)
+                    if "429" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
+                        logger.error(f"RATE LIMIT DETECTED for chunk {chunk_id}: {error_str}")
+                        # Wait before retrying on rate limits
+                        time.sleep(5)
+                        raise TranslationError(f"Gemini API rate limit exceeded: {error_str}", "RATE_LIMIT")
+                    else:
+                        logger.error(f"API error for chunk {chunk_id}: {error_str}")
+                        raise
+                
+                # Check if the response has text
+                if not hasattr(response, 'text') or not response.text:
+                    logger.error(f"Empty response from Gemini API for chunk {chunk_id}")
+                    raise TranslationError("Empty response from Gemini API", "EMPTY_RESPONSE")
                 
                 translated_text = response.text.strip()
                 
@@ -1175,10 +1206,8 @@ Here is the HTML with text to translate:
                             # Split page elements into chunks based on size
                             current_chunk = ""
                             current_elements = []
-                            
                             for i, element in enumerate(page_elements):
                                 element_str = str(element)
-                                
                                 # If adding this element would exceed max size, start a new chunk
                                 if len(current_chunk) + len(element_str) > max_size and current_chunk:
                                     # Wrap the chunk in proper structure
@@ -1187,7 +1216,6 @@ Here is the HTML with text to translate:
                                         chunk = f'<div class="document">{page_chunk}</div>'
                                     else:
                                         chunk = page_chunk
-                                    
                                     logger.info(f"Created sub-chunk for page {page_index+1}, size: {len(chunk)} chars")
                                     chunks.append(chunk)
                                     current_chunk = element_str
@@ -1195,7 +1223,6 @@ Here is the HTML with text to translate:
                                 else:
                                     current_chunk += element_str
                                     current_elements.append(element)
-                            
                             # Add the last chunk if it has content
                             if current_chunk:
                                 page_chunk = f'<div class="page">{current_chunk}</div>'
@@ -1203,26 +1230,21 @@ Here is the HTML with text to translate:
                                     chunk = f'<div class="document">{page_chunk}</div>'
                                 else:
                                     chunk = page_chunk
-                                
                                 logger.info(f"Created final sub-chunk for page {page_index+1}, size: {len(chunk)} chars")
                                 chunks.append(chunk)
                         else:
                             # If the page can't be split by elements, use regex method
                             logger.info(f"Page {page_index+1} has only one element, using regex splitting")
-                            
                             # Get the inner content of the page div
                             inner_content = page_soup.decode_contents()
-                            
                             # Try to split at paragraph or div boundaries within the content
                             inner_parts = re.split(r'(</p>|</div>)', str(inner_content))
                             current_chunk = ""
-                            
                             for part_index in range(0, len(inner_parts), 2):
                                 part = inner_parts[part_index]
                                 # Add the closing tag if it exists
                                 if part_index+1 < len(inner_parts):
                                     part += inner_parts[part_index+1]
-                                
                                 # If adding this part would exceed max size, start a new chunk
                                 if len(current_chunk) + len(part) > max_size and current_chunk:
                                     page_chunk = f'<div class="page">{current_chunk}</div>'
@@ -1230,13 +1252,11 @@ Here is the HTML with text to translate:
                                         chunk = f'<div class="document">{page_chunk}</div>'
                                     else:
                                         chunk = page_chunk
-                                    
                                     logger.info(f"Created regex-based sub-chunk for page {page_index+1}")
                                     chunks.append(chunk)
                                     current_chunk = part
                                 else:
                                     current_chunk += part
-                            
                             # Add the last chunk if it has content
                             if current_chunk:
                                 page_chunk = f'<div class="page">{current_chunk}</div>'
@@ -1244,27 +1264,8 @@ Here is the HTML with text to translate:
                                     chunk = f'<div class="document">{page_chunk}</div>'
                                 else:
                                     chunk = page_chunk
-                                
                                 logger.info(f"Created final regex-based sub-chunk for page {page_index+1}")
                                 chunks.append(chunk)
-                            
-                            # If still can't split, use fallback
-                            if not chunks:
-                                logger.warning(f"Fallback: dividing page {page_index+1} into fixed chunks")
-                                # Split into chunks of max_size/2 to ensure we don't hit the limit
-                                safe_size = max_size // 2
-                                inner_content_str = str(inner_content)
-                                
-                                for i in range(0, len(inner_content_str), safe_size):
-                                    chunk_content = inner_content_str[i:i+safe_size]
-                                    page_chunk = f'<div class="page">{chunk_content}</div>'
-                                    if has_document_structure:
-                                        chunk = f'<div class="document">{page_chunk}</div>'
-                                    else:
-                                        chunk = page_chunk
-                                    
-                                    logger.info(f"Created fixed-size sub-chunk {i//safe_size+1} for page {page_index+1}")
-                                    chunks.append(chunk)
                     else:
                         # If page is small enough, use it as is
                         if has_document_structure:
@@ -1789,9 +1790,18 @@ Here is the HTML with text to translate:
                 buffer = io.BytesIO(file_content)
                 with fitz.open(stream=buffer, filetype="pdf") as doc:
                     total_pages = len(doc)
+                    
+                    # Quick check if this is a text-only PDF that can use fast path
+                    is_simple_pdf = True
+                    has_images = False
+                    for pg_idx in range(min(3, total_pages)):  # Check just first 3 pages
+                        if doc[pg_idx].get_images():
+                            has_images = True
+                            is_simple_pdf = False
+                            break
                 
                 logger.info(f"[TRANSLATE] PDF has {total_pages} pages for {process_id}")
-                logger.info(f"[TRANSLATE DEBUG] PDF opened successfully")
+                logger.info(f"[TRANSLATE DEBUG] PDF opened successfully, has_images={has_images}")
                 
                 # Update total pages
                 if progress:
@@ -1800,88 +1810,76 @@ Here is the HTML with text to translate:
                     logger.info(f"[TRANSLATE DEBUG] Updated total pages in database")
                 
                 # Process pages in parallel batches
-                batch_size = 8  # Process 8 pages at a time (increased from 3)
+                batch_size = 12  # Process 12 pages at a time (increased from 8)
                 logger.info(f"[TRANSLATE DEBUG] Starting batch processing with batch_size={batch_size}")
                 
-                for batch_start in range(0, total_pages, batch_size):
-                    batch_end = min(batch_start + batch_size, total_pages)
-                    current_batch = list(range(batch_start, batch_end))
-                    
-                    logger.info(f"[TRANSLATE] Processing page batch {batch_start+1}-{batch_end} of {total_pages}")
-                    logger.info(f"[TRANSLATE DEBUG] Preparing extraction tasks for batch {batch_start+1}-{batch_end}")
-                    
-                    # First extract content from all pages in batch
-                    extraction_tasks = []
-                    for page_index in current_batch:
-                        logger.info(f"[TRANSLATE DEBUG] Adding extraction task for page {page_index+1}")
-                        extraction_tasks.append(self.extract_page_content(file_content, page_index))
-                    
-                    # Run extractions in parallel
-                    logger.info(f"[TRANSLATE DEBUG] Running {len(extraction_tasks)} extraction tasks in parallel")
-                    extracted_contents = await asyncio.gather(*extraction_tasks)
-                    logger.info(f"[TRANSLATE DEBUG] Completed {len(extraction_tasks)} extractions in parallel")
-                    
-                    # Now process each extracted content
-                    for i, (page_index, html_content) in enumerate(zip(current_batch, extracted_contents)):
-                        current_page = page_index + 1
-                        
-                        # Update progress
-                        if progress:
-                            progress.currentPage = current_page
-                            progress.progress = int((current_page / total_pages) * 100)
-                            db.commit()
-                        
-                        if html_content and len(html_content.strip()) > 0:
-                            logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from page {current_page}")
-                            
-                            # Translate content
-                            translated_content = None
-                            
-                            # Split content if needed - use language-specific chunking
-                            max_chunk_size = self.get_max_chunk_size(to_lang)
-                            if len(html_content) > max_chunk_size * 1.2:  # Add 20% buffer
-                                chunks = self.split_content_into_chunks(html_content, max_chunk_size, to_lang)
-                                logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
-                                
-                                translated_chunks = []
-                                chunk_tasks = []
-                                for j, chunk in enumerate(chunks):
-                                    chunk_id = f"{process_id}-p{current_page}-c{j+1}"
-                                    logger.info(f"[TRANSLATE] Translating chunk {j+1}/{len(chunks)} (parallel)")
-                                    # Prepare the coroutine for this chunk
-                                    chunk_tasks.append(self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id))
-                                # Run all chunk translations in parallel, preserving order
-                                chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
-                                for j, result in enumerate(chunk_results):
-                                    if isinstance(result, Exception):
-                                        logger.error(f"[TRANSLATE] Error translating chunk {j+1}: {str(result)}")
-                                        translated_chunks.append(f"<div class='error'>Translation error in section {j+1}: {str(result)}</div>")
-                                    else:
-                                        translated_chunks.append(result)
-                                translated_content = self.combine_html_content(translated_chunks)
-                            else:
-                                chunk_id = f"{process_id}-p{current_page}"
-                                try:
-                                    translated_content = await self.translate_chunk(
-                                        html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                    )
-                                except Exception as chunk_error:
-                                    logger.error(f"[TRANSLATE] Error translating page {current_page}: {str(chunk_error)}")
-                                    # Create an error message instead
-                                    translated_content = f"<div class='error'>Translation error on page {current_page}: {str(chunk_error)}</div>"
-                            
-                            # Save translation
-                            translation_chunk = TranslationChunk(
-                                processId=process_id,
-                                pageNumber=page_index,
-                                content=translated_content
-                            )
-                            db.add(translation_chunk)
-                            db.commit()
-                            
-                            translated_pages.append(page_index)
+                # Process all batches in one operation with a semaphore for rate limiting
+                semaphore = asyncio.Semaphore(20)  # Limit concurrent API calls
+                
+                async def process_page(page_index):
+                    current_page = page_index + 1
+                    logger.info(f"[TRANSLATE DEBUG] Processing page {current_page}")
+                    # Update progress
+                    if progress:
+                        progress.currentPage = current_page
+                        progress.progress = int((current_page / total_pages) * 100)
+                        db.commit()
+                    # Extract content (with rate limiting)
+                    async with semaphore:
+                        html_content = await self.extract_page_content(file_content, page_index)
+                    if html_content and len(html_content.strip()) > 0:
+                        logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from page {current_page}")
+                        # Translate content
+                        translated_content = None
+                        # Split content if needed - use language-specific chunking
+                        max_chunk_size = self.get_max_chunk_size(to_lang)
+                        if len(html_content) > max_chunk_size * 1.2:  # Add 20% buffer
+                            chunks = self.split_content_into_chunks(html_content, max_chunk_size, to_lang)
+                            logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
+                            # Process all chunks in parallel with semaphore for rate limiting
+                            async def translate_chunk_with_limit(chunk, chunk_num):
+                                chunk_id = f"{process_id}-p{current_page}-c{chunk_num+1}"
+                                logger.info(f"[TRANSLATE] Translating chunk {chunk_num+1}/{len(chunks)} (parallel)")
+                                async with semaphore:
+                                    try:
+                                        return await self.translate_chunk(chunk, from_lang, to_lang, retries=2, chunk_id=chunk_id)
+                                    except Exception as e:
+                                        logger.error(f"[TRANSLATE] Error translating chunk {chunk_num+1}: {str(e)}")
+                                        return f"<div class='error'>Translation error in section {chunk_num+1}: {str(e)}</div>"
+                            # Create tasks for all chunks
+                            translation_tasks = [translate_chunk_with_limit(chunk, i) for i, chunk in enumerate(chunks)]
+                            translated_chunks = await asyncio.gather(*translation_tasks)
+                            translated_content = self.combine_html_content(translated_chunks)
                         else:
-                            logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
+                            chunk_id = f"{process_id}-p{current_page}"
+                            try:
+                                async with semaphore:
+                                    translated_content = await self.translate_chunk(
+                                        html_content, from_lang, to_lang, retries=2, chunk_id=chunk_id
+                                    )
+                            except Exception as chunk_error:
+                                logger.error(f"[TRANSLATE] Error translating page {current_page}: {str(chunk_error)}")
+                                # Create an error message instead
+                                translated_content = f"<div class='error'>Translation error on page {current_page}: {str(chunk_error)}</div>"
+                        # Save translation
+                        translation_chunk = TranslationChunk(
+                            processId=process_id,
+                            pageNumber=page_index,
+                            content=translated_content
+                        )
+                        db.add(translation_chunk)
+                        db.commit()
+                        return page_index
+                    else:
+                        logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
+                        return None
+                
+                # Process all pages
+                all_page_tasks = [process_page(i) for i in range(total_pages)]
+                processed_pages = await asyncio.gather(*all_page_tasks)
+                
+                # Filter out None values
+                translated_pages = [p for p in processed_pages if p is not None]
 
             elif file_type in settings.SUPPORTED_DOC_TYPES:
                 # Handle non-PDF document types
