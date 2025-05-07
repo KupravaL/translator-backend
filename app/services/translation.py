@@ -1737,19 +1737,20 @@ Here is the HTML with text to translate:
                             logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
                             
                             translated_chunks = []
+                            chunk_tasks = []
                             for i, chunk in enumerate(chunks):
                                 chunk_id = f"{process_id}-p{current_page}-c{i+1}"
-                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
-                                try:
-                                    chunk_result = await self.translate_chunk(
-                                        chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                    )
-                                    translated_chunks.append(chunk_result)
-                                except Exception as chunk_error:
-                                    logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(chunk_error)}")
-                                    # Continue with other chunks but mark this one as failed
-                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
-                                
+                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)} (parallel)")
+                                # Prepare the coroutine for this chunk
+                                chunk_tasks.append(self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id))
+                            # Run all chunk translations in parallel, preserving order
+                            chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+                            for i, result in enumerate(chunk_results):
+                                if isinstance(result, Exception):
+                                    logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(result)}")
+                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(result)}</div>")
+                                else:
+                                    translated_chunks.append(result)
                             translated_content = self.combine_html_content(translated_chunks)
                         else:
                             chunk_id = f"{process_id}-p{current_page}"
@@ -1811,19 +1812,20 @@ Here is the HTML with text to translate:
                             logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
                             
                             translated_chunks = []
+                            chunk_tasks = []
                             for i, chunk in enumerate(chunks):
                                 chunk_id = f"{process_id}-doc-c{i+1}"
-                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
-                                try:
-                                    chunk_result = await self.translate_chunk(
-                                        chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                    )
-                                    translated_chunks.append(chunk_result)
-                                except Exception as chunk_error:
-                                    logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(chunk_error)}")
-                                    # Continue with other chunks but mark this one as failed
-                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
-                                
+                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)} (parallel)")
+                                # Prepare the coroutine for this chunk
+                                chunk_tasks.append(self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id))
+                            # Run all chunk translations in parallel, preserving order
+                            chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+                            for i, result in enumerate(chunk_results):
+                                if isinstance(result, Exception):
+                                    logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(result)}")
+                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(result)}</div>")
+                                else:
+                                    translated_chunks.append(result)
                             translated_content = self.combine_html_content(translated_chunks)
                         else:
                             chunk_id = f"{process_id}-doc"
@@ -1886,17 +1888,20 @@ Here is the HTML with text to translate:
                             logger.info(f"[TRANSLATE] Split image into {len(chunks)} chunks for {to_lang} translation")
                             
                             translated_chunks = []
+                            chunk_tasks = []
                             for i, chunk in enumerate(chunks):
                                 chunk_id = f"{process_id}-img-c{i+1}"
-                                try:
-                                    chunk_result = await self.translate_chunk(
-                                        chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                    )
-                                    translated_chunks.append(chunk_result)
-                                except Exception as chunk_error:
-                                    logger.error(f"[TRANSLATE] Error translating image chunk {i+1}: {str(chunk_error)}")
-                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
-                                
+                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)} (parallel)")
+                                # Prepare the coroutine for this chunk
+                                chunk_tasks.append(self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id))
+                            # Run all chunk translations in parallel, preserving order
+                            chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+                            for i, result in enumerate(chunk_results):
+                                if isinstance(result, Exception):
+                                    logger.error(f"[TRANSLATE] Error translating image chunk {i+1}: {str(result)}")
+                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(result)}</div>")
+                                else:
+                                    translated_chunks.append(result)
                             translated_content = self.combine_html_content(translated_chunks)
                         else:
                             chunk_id = f"{process_id}-img"
