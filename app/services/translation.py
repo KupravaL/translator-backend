@@ -511,12 +511,13 @@ Extract the content so it looks like in the initial document as much as possible
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
         
         start_time = time.time()
-        logger.info(f"Starting content extraction for page {page_index + 1}")
+        logger.info(f"[EXTRACT DEBUG] Starting extraction for page {page_index + 1}")
         
         # Read PDF in memory without creating a file
         try:
             # Create an in-memory buffer for the PDF content
             buffer = io.BytesIO(pdf_bytes)
+            logger.info(f"[EXTRACT DEBUG] Created buffer for page {page_index + 1}")
             
             # Open PDF with PyMuPDF directly from the buffer
             with fitz.open(stream=buffer, filetype="pdf") as doc:
@@ -525,6 +526,7 @@ Extract the content so it looks like in the initial document as much as possible
                     return '<div class="page"><p class="text-content">Page does not exist in document.</p></div>'
                 
                 page = doc[page_index]
+                logger.info(f"[EXTRACT DEBUG] Opened page {page_index + 1} in PDF")
                 
                 # Add page diagnostics to help with debugging
                 logger.info(f"Page {page_index + 1} dimensions: {page.rect}, rotation: {page.rotation}")
@@ -539,7 +541,9 @@ Extract the content so it looks like in the initial document as much as possible
                     logger.warning(f"Page {page_index + 1} contains no extractable text")
                 
                 # Extract content with Gemini
+                logger.info(f"[EXTRACT DEBUG] Calling Gemini for page {page_index + 1}")
                 html_content = await self._get_formatted_text_from_gemini_buffer(page)
+                logger.info(f"[EXTRACT DEBUG] Received Gemini response for page {page_index + 1}")
                 
                 # Enhanced empty content check with better fallback
                 if not html_content or html_content.strip() == '':
@@ -566,6 +570,7 @@ Extract the content so it looks like in the initial document as much as possible
                 
                 logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
                 logger.info(f"Page extraction took {time.time() - start_time:.2f} seconds")
+                logger.info(f"[EXTRACT DEBUG] Completed extraction for page {page_index + 1}")
                 
                 return html_content
                 
@@ -630,16 +635,19 @@ Extract the content so it looks like in the initial document as much as possible
         """Use Gemini to analyze and extract formatted text with improved memory management"""
         page_index = page.number
         page_start_time = time.time()
-        logger.info(f"Extracting formatted text from page {page_index + 1} using Gemini")
+        logger.info(f"[GEMINI DEBUG] Starting Gemini extraction for page {page_index + 1}")
         
         # Create a pixmap with improved resolution for better text extraction
-        pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(2, 2))
-        
-        # Convert pixmap to bytes in memory
-        img_bytes = pix.tobytes(output="png")
-        
         try:
-            prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML and styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
+            pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(2, 2))
+            logger.info(f"[GEMINI DEBUG] Created pixmap for page {page_index + 1}")
+            
+            # Convert pixmap to bytes in memory
+            img_bytes = pix.tobytes(output="png")
+            logger.info(f"[GEMINI DEBUG] Converted pixmap to bytes, size: {len(img_bytes)} bytes")
+            
+            try:
+                prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML and styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
 
     Core Requirements:
     1. Structure Analysis:
@@ -700,33 +708,52 @@ Extract the content so it looks like in the initial document as much as possible
     - "text-content" for regular text blocks
     Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
 
-            contents = [
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=prompt),
-                        # Fix: Use correct MIME type for PNG image
-                        types.Part.from_bytes(data=img_bytes, mime_type="image/png")
-                    ],
-                ),
-            ]
-            
-            generation_config = types.GenerateContentConfig(
-                temperature=0.1,
-                response_mime_type="text/plain"
-            )
-            
-            response = self.client.models.generate_content(
-                model=self.extraction_model,
-                contents=contents,
-                config=generation_config
-            )
-            
-            html_content = response.text.strip()
-            html_content = html_content.replace('```html', '').replace('```', '').strip()
-            
-            # Add enhanced CSS styles
-            css_styles = """
+                contents = [
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part.from_text(text=prompt),
+                            # Fix: Use correct MIME type for PNG image
+                            types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+                        ],
+                    ),
+                ]
+                
+                generation_config = types.GenerateContentConfig(
+                    temperature=0.1,
+                    response_mime_type="text/plain"
+                )
+                
+                logger.info(f"[GEMINI DEBUG] Sending request to Gemini API for page {page_index + 1}")
+                try:
+                    response = self.client.models.generate_content(
+                        model=self.extraction_model,
+                        contents=contents,
+                        config=generation_config
+                    )
+                    logger.info(f"[GEMINI DEBUG] Received response from Gemini API for page {page_index + 1}")
+                except Exception as api_error:
+                    # Check specifically for rate limit errors
+                    error_str = str(api_error)
+                    if "429" in error_str or "rate limit" in error_str.lower() or "quota" in error_str.lower():
+                        logger.error(f"[GEMINI DEBUG] RATE LIMIT DETECTED for page {page_index + 1}: {error_str}")
+                        # Wait a bit longer before retrying on rate limits
+                        time.sleep(5)
+                        raise TranslationError(f"Gemini API rate limit exceeded: {error_str}", "RATE_LIMIT")
+                    else:
+                        logger.error(f"[GEMINI DEBUG] API error for page {page_index + 1}: {error_str}")
+                        raise
+                
+                # Check if the response has text - handle empty responses
+                if not hasattr(response, 'text') or not response.text:
+                    logger.error(f"[GEMINI DEBUG] Empty response from Gemini API for page {page_index + 1}")
+                    raise TranslationError("Empty response from Gemini API", "EMPTY_RESPONSE")
+                
+                html_content = response.text.strip()
+                html_content = html_content.replace('```html', '').replace('```', '').strip()
+                
+                # Add enhanced CSS styles
+                css_styles = """
     <style>
         .document {
             width: 100%;
@@ -773,73 +800,85 @@ Extract the content so it looks like in the initial document as much as possible
         }
     </style>
     """
-            if '<style>' not in html_content:
-                html_content = f"{css_styles}\n{html_content}"
-            
-            # Process and normalize index numbers
-            soup = BeautifulSoup(html_content, 'html.parser')
-            for index_div in soup.find_all(class_='index'):
-                index_text = index_div.get_text().strip()
-                corrected_index = self.normalize_index(index_text)
-                if corrected_index != index_text:
-                    index_div.string = corrected_index
-                    
-            html_content = str(soup)
-            
-            # Enhanced validation to ensure we have actual content
-            text_content = re.sub(r'<[^>]+>', '', html_content).strip()
-            if len(html_content) < 50 or '<' not in html_content or not text_content:
-                logger.error("Invalid or insufficient content extracted from page")
-                # Fall back to simpler extraction but don't return empty
-                text = page.get_text()
-                if text and len(text.strip()) > 0:
-                    # Fix 2: Properly escape HTML in text extraction fallback
-                    from html import escape
-                    escaped_text = escape(text)
-                    paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
-                    formatted_content = ""
-                    for p in paragraphs:
-                        formatted_content += f"<p class='text-content'>{p}</p>\n"
-                    return f"<div class='page'>{formatted_content}</div>"
-                else:
-                    # If truly empty, create a placeholder saying so
-                    return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
-            
-            logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
-            
-            return html_content
-            
-        except Exception as e:
-            logger.error(f"Error in Gemini processing for page {page_index + 1}: {e}")
-            # Fix 3: Improved fallback logic for text extraction
-            try:
-                text = page.get_text()
-                logger.warning(f"Falling back to plain text extraction for page {page_index + 1} ({len(text)} chars)")
+                if '<style>' not in html_content:
+                    html_content = f"{css_styles}\n{html_content}"
                 
-                # Better handling of fallback text
-                if text and len(text.strip()) > 0:
-                    from html import escape
-                    escaped_text = escape(text)
-                    # Split text into paragraphs and preserve structure
-                    paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
-                    formatted_content = ""
-                    for p in paragraphs:
-                        formatted_content += f"<p class='text-content'>{p}</p>\n"
-                    return f"<div class='page'>{formatted_content}</div>"
-                else:
-                    # Create meaningful placeholder for empty pages
-                    return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
-            except Exception as text_error:
-                logger.error(f"Fallback text extraction also failed: {text_error}")
-                return "<div class='page'><p class='text-content'>Error processing this page: couldn't extract content.</p></div>"
+                # Process and normalize index numbers
+                soup = BeautifulSoup(html_content, 'html.parser')
+                for index_div in soup.find_all(class_='index'):
+                    index_text = index_div.get_text().strip()
+                    corrected_index = self.normalize_index(index_text)
+                    if corrected_index != index_text:
+                        index_div.string = corrected_index
+                        
+                html_content = str(soup)
+                logger.info(f"[GEMINI DEBUG] Processed HTML content for page {page_index + 1}")
+                
+                # Enhanced validation to ensure we have actual content
+                text_content = re.sub(r'<[^>]+>', '', html_content).strip()
+                if len(html_content) < 50 or '<' not in html_content or not text_content:
+                    logger.error(f"[GEMINI DEBUG] Invalid or insufficient content extracted from page {page_index + 1}")
+                    # Fall back to simpler extraction but don't return empty
+                    text = page.get_text()
+                    if text and len(text.strip()) > 0:
+                        # Fix 2: Properly escape HTML in text extraction fallback
+                        from html import escape
+                        escaped_text = escape(text)
+                        paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
+                        formatted_content = ""
+                        for p in paragraphs:
+                            formatted_content += f"<p class='text-content'>{p}</p>\n"
+                        logger.info(f"[GEMINI DEBUG] Using fallback text extraction for page {page_index + 1}")
+                        return f"<div class='page'>{formatted_content}</div>"
+                    else:
+                        # If truly empty, create a placeholder saying so
+                        logger.warning(f"[GEMINI DEBUG] Using empty page placeholder for page {page_index + 1}")
+                        return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
+                
+                logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
+                
+                return html_content
+                
+            except Exception as e:
+                logger.error(f"[GEMINI DEBUG] Error in Gemini processing for page {page_index + 1}: {e}")
+                # Fix 3: Improved fallback logic for text extraction
+                try:
+                    text = page.get_text()
+                    logger.warning(f"[GEMINI DEBUG] Falling back to plain text extraction for page {page_index + 1} ({len(text)} chars)")
+                    
+                    # Better handling of fallback text
+                    if text and len(text.strip()) > 0:
+                        from html import escape
+                        escaped_text = escape(text)
+                        # Split text into paragraphs and preserve structure
+                        paragraphs = [p for p in escaped_text.split('\n\n') if p.strip()]
+                        formatted_content = ""
+                        for p in paragraphs:
+                            formatted_content += f"<p class='text-content'>{p}</p>\n"
+                        return f"<div class='page'>{formatted_content}</div>"
+                    else:
+                        # Create meaningful placeholder for empty pages
+                        return "<div class='page'><p class='text-content'>This page appears to be empty or contains only images that couldn't be processed.</p></div>"
+                except Exception as text_error:
+                    logger.error(f"[GEMINI DEBUG] Fallback text extraction also failed: {text_error}")
+                    return "<div class='page'><p class='text-content'>Error processing this page: couldn't extract content.</p></div>"
+        except Exception as pixmap_error:
+            logger.error(f"[GEMINI DEBUG] Error creating pixmap for page {page_index + 1}: {str(pixmap_error)}")
+            raise
         finally:
             # Clean up resources
-            del pix
-            del img_bytes
-            # Force garbage collection
-            gc.collect()
-            logger.debug(f"Resources cleaned up for page {page_index + 1}")
-            logger.info(f"Total processing time for page {page_index + 1}: {time.time() - page_start_time:.2f} seconds")
+            try:
+                if 'pix' in locals():
+                    del pix
+                if 'img_bytes' in locals():
+                    del img_bytes
+                # Force garbage collection
+                gc.collect()
+                logger.debug(f"[GEMINI DEBUG] Resources cleaned up for page {page_index + 1}")
+            except Exception as cleanup_error:
+                logger.warning(f"[GEMINI DEBUG] Error during cleanup for page {page_index + 1}: {str(cleanup_error)}")
+            
+            logger.info(f"[GEMINI DEBUG] Total processing time for page {page_index + 1}: {time.time() - page_start_time:.2f} seconds")
 
     async def _get_formatted_text_from_gemini(self, page):
         """Legacy method - retained for backward compatibility"""
@@ -1728,6 +1767,9 @@ Here is the HTML with text to translate:
         translated_pages = []
         start_time = time.time()
         
+        # Add detailed debugging to track initialization
+        logger.info(f"[TRANSLATE DEBUG] Starting translation process for {process_id}")
+        
         # Find translation progress record to check userId for potential refunds
         try:
             progress = db.query(TranslationProgress).filter(
@@ -1742,6 +1784,7 @@ Here is the HTML with text to translate:
                 }
                 
             user_id = progress.userId
+            logger.info(f"[TRANSLATE DEBUG] Found progress record for user {user_id}")
         except Exception as e:
             logger.error(f"[TRANSLATE] Failed to get translation record: {str(e)}")
             user_id = None
@@ -1750,32 +1793,41 @@ Here is the HTML with text to translate:
             # Handle PDFs
             if file_type in settings.SUPPORTED_DOC_TYPES and 'pdf' in file_type:
                 # Get PDF page count
+                logger.info(f"[TRANSLATE DEBUG] Opening PDF stream")
                 buffer = io.BytesIO(file_content)
                 with fitz.open(stream=buffer, filetype="pdf") as doc:
                     total_pages = len(doc)
                 
                 logger.info(f"[TRANSLATE] PDF has {total_pages} pages for {process_id}")
+                logger.info(f"[TRANSLATE DEBUG] PDF opened successfully")
                 
                 # Update total pages
                 if progress:
                     progress.totalPages = total_pages
                     db.commit()
+                    logger.info(f"[TRANSLATE DEBUG] Updated total pages in database")
                 
                 # Process pages in parallel batches
                 batch_size = 3  # Process 3 pages at a time (adjust as needed)
+                logger.info(f"[TRANSLATE DEBUG] Starting batch processing with batch_size={batch_size}")
+                
                 for batch_start in range(0, total_pages, batch_size):
                     batch_end = min(batch_start + batch_size, total_pages)
                     current_batch = list(range(batch_start, batch_end))
                     
                     logger.info(f"[TRANSLATE] Processing page batch {batch_start+1}-{batch_end} of {total_pages}")
+                    logger.info(f"[TRANSLATE DEBUG] Preparing extraction tasks for batch {batch_start+1}-{batch_end}")
                     
                     # First extract content from all pages in batch
                     extraction_tasks = []
                     for page_index in current_batch:
+                        logger.info(f"[TRANSLATE DEBUG] Adding extraction task for page {page_index+1}")
                         extraction_tasks.append(self.extract_page_content(file_content, page_index))
                     
                     # Run extractions in parallel
+                    logger.info(f"[TRANSLATE DEBUG] Running {len(extraction_tasks)} extraction tasks in parallel")
                     extracted_contents = await asyncio.gather(*extraction_tasks)
+                    logger.info(f"[TRANSLATE DEBUG] Completed {len(extraction_tasks)} extractions in parallel")
                     
                     # Now process each extracted content
                     for i, (page_index, html_content) in enumerate(zip(current_batch, extracted_contents)):
