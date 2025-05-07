@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     API_VERSION: str = "1.0.0"
     
     # CORS Configuration
-    CORS_ORIGINS: List[str] = DEFAULT_CORS_ORIGINS
+    CORS_ORIGINS: str = ",".join(DEFAULT_CORS_ORIGINS)
     
     # Security
     SECRET_KEY: str = "your-secret-key-here"  # Change in production
@@ -72,19 +72,12 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
     
-    @field_validator("CORS_ORIGINS", mode="before")
-    @classmethod
-    def parse_cors_origins(cls, v):
-        if isinstance(v, str):
-            if not v:
-                return DEFAULT_CORS_ORIGINS
-            try:
-                if v.startswith("["):
-                    return json.loads(v)
-                return [origin.strip() for origin in v.split(",") if origin.strip()]
-            except Exception:
-                return DEFAULT_CORS_ORIGINS
-        return v
+    @property
+    def cors_origins_list(self) -> List[str]:
+        """Get CORS origins as a list."""
+        if not self.CORS_ORIGINS:
+            return DEFAULT_CORS_ORIGINS
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
     
     class Config:
         case_sensitive = True
