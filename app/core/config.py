@@ -1,7 +1,7 @@
 import os
 import json
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
 from functools import lru_cache
@@ -72,22 +72,23 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
     
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v):
+        if isinstance(v, str):
+            if not v:
+                return DEFAULT_CORS_ORIGINS
+            try:
+                if v.startswith("["):
+                    return json.loads(v)
+                return [origin.strip() for origin in v.split(",") if origin.strip()]
+            except Exception:
+                return DEFAULT_CORS_ORIGINS
+        return v
+    
     class Config:
         case_sensitive = True
         env_file = ".env"
-        
-        @classmethod
-        def parse_env_var(cls, field_name: str, raw_val: str) -> Any:
-            if field_name == "CORS_ORIGINS":
-                if not raw_val:
-                    return DEFAULT_CORS_ORIGINS
-                try:
-                    if raw_val.startswith("["):
-                        return json.loads(raw_val)
-                    return [origin.strip() for origin in raw_val.split(",") if origin.strip()]
-                except Exception:
-                    return DEFAULT_CORS_ORIGINS
-            return raw_val
 
 @lru_cache()
 def get_settings() -> Settings:
