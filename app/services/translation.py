@@ -878,6 +878,15 @@ Extract the content so it looks like in the initial document as much as possible
         
         for attempt in range(1, retries + 1):
             try:
+                # Log chunk content for debugging (only on first attempt)
+                if attempt == 1:
+                    chunk_preview_start = html_content_with_tags[:200].replace('\n', ' ')
+                    chunk_preview_end = html_content_with_tags[-200:].replace('\n', ' ') if len(html_content_with_tags) > 200 else ''
+                    logger.info(f"Chunk {chunk_id} content preview (start): {chunk_preview_start} ...")
+                    if chunk_preview_end:
+                        logger.info(f"Chunk {chunk_id} content preview (end): ... {chunk_preview_end}")
+                    logger.info(f"Chunk {chunk_id} content length: {len(html_content_with_tags)} chars")
+                
                 # Create a unified prompt for all languages with strong anti-placeholder instructions
                 prompt = f"""You are a professional translator with a knowledge of HTML. Translate all text content in this HTML to {to_lang_display}.
 
