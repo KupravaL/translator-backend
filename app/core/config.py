@@ -75,6 +75,19 @@ class Settings(BaseSettings):
     class Config:
         case_sensitive = True
         env_file = ".env"
+        
+        @classmethod
+        def parse_env_var(cls, field_name: str, raw_val: str) -> Any:
+            if field_name == "CORS_ORIGINS":
+                if not raw_val:
+                    return DEFAULT_CORS_ORIGINS
+                try:
+                    if raw_val.startswith("["):
+                        return json.loads(raw_val)
+                    return [origin.strip() for origin in raw_val.split(",") if origin.strip()]
+                except Exception:
+                    return DEFAULT_CORS_ORIGINS
+            return raw_val
 
 @lru_cache()
 def get_settings() -> Settings:
@@ -82,27 +95,3 @@ def get_settings() -> Settings:
     return Settings()
 
 settings = get_settings()
-
-# Process CORS_ORIGINS separately from pydantic
-cors_value = os.getenv("CORS_ORIGINS")
-if cors_value:
-    try:
-        # If string is empty, use defaults
-        if not cors_value.strip():
-            settings = Settings(CORS_ORIGINS=DEFAULT_CORS_ORIGINS)
-        # Try JSON format
-        elif cors_value.startswith("["):
-            try:
-                origins = json.loads(cors_value)
-                settings = Settings(CORS_ORIGINS=origins)
-            except json.JSONDecodeError:
-                # Fallback to comma-separated if JSON parsing fails
-                origins = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
-                settings = Settings(CORS_ORIGINS=origins)
-        # Use comma-separated format
-        else:
-            origins = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
-            settings = Settings(CORS_ORIGINS=origins)
-    except Exception as e:
-        print(f"Warning: Failed to process CORS_ORIGINS: {str(e)}")
-        settings = Settings(CORS_ORIGINS=DEFAULT_CORS_ORIGINS)
