@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.api.v1.endpoints import translation
+from app.api.v1.endpoints import balance
 
 # Setup logging
 loggers = setup_logging()
@@ -29,6 +30,12 @@ app.include_router(
     translation.router,
     prefix="/api",
     tags=["translation"]
+)
+
+app.include_router(
+    balance.router,
+    prefix="/api",
+    tags=["balance"]
 )
 
 @app.get("/")

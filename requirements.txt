@@ -53,3 +53,5 @@ uuid==1.30
 # googletrans==3.1.0a0  # Google Translate alternative
 
 asyncio==3.4.3
+
+clerk-sdk

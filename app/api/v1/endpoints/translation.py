@@ -22,10 +22,10 @@ async def create_translation(
     """Create a new translation task."""
     try:
         # Validate file type
-        if not file.content_type in settings.SUPPORTED_FILE_TYPES:
+        if not file.content_type in settings.SUPPORTED_DOC_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported file type. Supported types: {settings.SUPPORTED_FILE_TYPES}"
+                detail=f"Unsupported file type. Supported types: {settings.SUPPORTED_DOC_TYPES}"
             )
         
         # Read file content
