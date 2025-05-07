@@ -1124,68 +1124,127 @@ Here is the HTML with text to translate:
                     page_text = page.get_text()[:100].replace('\n', ' ')
                     logger.info(f"Page {i+1} starts with: {page_text}...")
                 
-                # If we have pages, split by page
+                # Force splitting large pages into smaller chunks
                 chunks = []
-                current_chunk = ""
-                current_pages = []
-                
-                for i, page in enumerate(pages):
+                for page_index, page in enumerate(pages):
                     page_html = str(page)
                     
-                    # If adding this page would exceed max size, start a new chunk
-                    if len(current_chunk) + len(page_html) > max_size and current_chunk:
-                        # Create a proper document structure
-                        if has_document_structure:
-                            chunk = f'<div class="document">{current_chunk}</div>'
+                    # If page is too large, split it further
+                    if len(page_html) > max_size:
+                        logger.info(f"Page {page_index+1} is too large ({len(page_html)} chars), splitting further")
+                        
+                        # Get all direct children of the page
+                        page_soup = BeautifulSoup(page_html, 'html.parser')
+                        page_elements = list(page_soup.children)
+                        
+                        # Filter to keep only tag elements and non-empty strings
+                        page_elements = [el for el in page_elements if el.name or (isinstance(el, str) and el.strip())]
+                        
+                        if len(page_elements) > 1:
+                            # Split page elements into chunks based on size
+                            current_chunk = ""
+                            current_elements = []
+                            
+                            for i, element in enumerate(page_elements):
+                                element_str = str(element)
+                                
+                                # If adding this element would exceed max size, start a new chunk
+                                if len(current_chunk) + len(element_str) > max_size and current_chunk:
+                                    # Wrap the chunk in proper structure
+                                    page_chunk = f'<div class="page">{current_chunk}</div>'
+                                    if has_document_structure:
+                                        chunk = f'<div class="document">{page_chunk}</div>'
+                                    else:
+                                        chunk = page_chunk
+                                    
+                                    logger.info(f"Created sub-chunk for page {page_index+1}, size: {len(chunk)} chars")
+                                    chunks.append(chunk)
+                                    current_chunk = element_str
+                                    current_elements = [element]
+                                else:
+                                    current_chunk += element_str
+                                    current_elements.append(element)
+                            
+                            # Add the last chunk if it has content
+                            if current_chunk:
+                                page_chunk = f'<div class="page">{current_chunk}</div>'
+                                if has_document_structure:
+                                    chunk = f'<div class="document">{page_chunk}</div>'
+                                else:
+                                    chunk = page_chunk
+                                
+                                logger.info(f"Created final sub-chunk for page {page_index+1}, size: {len(chunk)} chars")
+                                chunks.append(chunk)
                         else:
-                            chunk = current_chunk
+                            # If the page can't be split by elements, use regex method
+                            logger.info(f"Page {page_index+1} has only one element, using regex splitting")
+                            
+                            # Get the inner content of the page div
+                            inner_content = page_soup.decode_contents()
+                            
+                            # Try to split at paragraph or div boundaries within the content
+                            inner_parts = re.split(r'(</p>|</div>)', str(inner_content))
+                            current_chunk = ""
+                            
+                            for part_index in range(0, len(inner_parts), 2):
+                                part = inner_parts[part_index]
+                                # Add the closing tag if it exists
+                                if part_index+1 < len(inner_parts):
+                                    part += inner_parts[part_index+1]
+                                
+                                # If adding this part would exceed max size, start a new chunk
+                                if len(current_chunk) + len(part) > max_size and current_chunk:
+                                    page_chunk = f'<div class="page">{current_chunk}</div>'
+                                    if has_document_structure:
+                                        chunk = f'<div class="document">{page_chunk}</div>'
+                                    else:
+                                        chunk = page_chunk
+                                    
+                                    logger.info(f"Created regex-based sub-chunk for page {page_index+1}")
+                                    chunks.append(chunk)
+                                    current_chunk = part
+                                else:
+                                    current_chunk += part
+                            
+                            # Add the last chunk if it has content
+                            if current_chunk:
+                                page_chunk = f'<div class="page">{current_chunk}</div>'
+                                if has_document_structure:
+                                    chunk = f'<div class="document">{page_chunk}</div>'
+                                else:
+                                    chunk = page_chunk
+                                
+                                logger.info(f"Created final regex-based sub-chunk for page {page_index+1}")
+                                chunks.append(chunk)
+                            
+                            # If still can't split, use fallback
+                            if not chunks:
+                                logger.warning(f"Fallback: dividing page {page_index+1} into fixed chunks")
+                                # Split into chunks of max_size/2 to ensure we don't hit the limit
+                                safe_size = max_size // 2
+                                inner_content_str = str(inner_content)
+                                
+                                for i in range(0, len(inner_content_str), safe_size):
+                                    chunk_content = inner_content_str[i:i+safe_size]
+                                    page_chunk = f'<div class="page">{chunk_content}</div>'
+                                    if has_document_structure:
+                                        chunk = f'<div class="document">{page_chunk}</div>'
+                                    else:
+                                        chunk = page_chunk
+                                    
+                                    logger.info(f"Created fixed-size sub-chunk {i//safe_size+1} for page {page_index+1}")
+                                    chunks.append(chunk)
+                    else:
+                        # If page is small enough, use it as is
+                        if has_document_structure:
+                            chunk = f'<div class="document">{page_html}</div>'
+                        else:
+                            chunk = page_html
                         
-                        # Log the chunk boundaries for debugging
-                        first_page_idx = i - len(current_pages)
-                        last_page_idx = i - 1
-                        logger.info(f"Created chunk containing pages {first_page_idx+1}-{last_page_idx+1}")
-                        
-                        # Log the start and end of the chunk content
-                        soup_chunk = BeautifulSoup(chunk, 'html.parser')
-                        chunk_text = soup_chunk.get_text()
-                        chunk_start = chunk_text[:100].replace('\n', ' ')
-                        chunk_end = chunk_text[-100:].replace('\n', ' ')
-                        logger.info(f"Chunk starts with: {chunk_start}...")
-                        logger.info(f"Chunk ends with: ...{chunk_end}")
-                        
+                        logger.info(f"Using page {page_index+1} as a single chunk")
                         chunks.append(chunk)
-                        
-                        # Start a new chunk with this page
-                        current_chunk = page_html
-                        current_pages = [page]
-                    else:
-                        # Add page to current chunk
-                        current_chunk += page_html
-                        current_pages.append(page)
                 
-                # Add the last chunk if it has content
-                if current_chunk:
-                    if has_document_structure:
-                        chunk = f'<div class="document">{current_chunk}</div>'
-                    else:
-                        chunk = current_chunk
-                    
-                    # Log the last chunk
-                    first_page_idx = len(pages) - len(current_pages)
-                    last_page_idx = len(pages) - 1
-                    logger.info(f"Created final chunk containing pages {first_page_idx+1}-{last_page_idx+1}")
-                    
-                    # Log the start and end of the chunk content
-                    soup_chunk = BeautifulSoup(chunk, 'html.parser')
-                    chunk_text = soup_chunk.get_text()
-                    chunk_start = chunk_text[:100].replace('\n', ' ')
-                    chunk_end = chunk_text[-100:].replace('\n', ' ')
-                    logger.info(f"Final chunk starts with: {chunk_start}...")
-                    logger.info(f"Final chunk ends with: ...{chunk_end}")
-                    
-                    chunks.append(chunk)
-                
-                logger.info(f"Split content into {len(chunks)} chunks by pages")
+                logger.info(f"Split content into {len(chunks)} chunks with page-aware splitting")
                 
                 # Verify chunk continuity
                 if len(chunks) > 1:
@@ -1702,79 +1761,83 @@ Here is the HTML with text to translate:
                     progress.totalPages = total_pages
                     db.commit()
                 
-                # Process each page
-                for page_index in range(total_pages):
-                    current_page = page_index + 1
+                # Process pages in parallel batches
+                batch_size = 3  # Process 3 pages at a time (adjust as needed)
+                for batch_start in range(0, total_pages, batch_size):
+                    batch_end = min(batch_start + batch_size, total_pages)
+                    current_batch = list(range(batch_start, batch_end))
                     
-                    # Update progress
-                    progress = db.query(TranslationProgress).filter(
-                        TranslationProgress.processId == process_id
-                    ).first()
+                    logger.info(f"[TRANSLATE] Processing page batch {batch_start+1}-{batch_end} of {total_pages}")
                     
-                    if not progress or progress.status == "failed":
-                        logger.warning(f"[TRANSLATE] Process was canceled or failed: {process_id}")
-                        return
+                    # First extract content from all pages in batch
+                    extraction_tasks = []
+                    for page_index in current_batch:
+                        extraction_tasks.append(self.extract_page_content(file_content, page_index))
+                    
+                    # Run extractions in parallel
+                    extracted_contents = await asyncio.gather(*extraction_tasks)
+                    
+                    # Now process each extracted content
+                    for i, (page_index, html_content) in enumerate(zip(current_batch, extracted_contents)):
+                        current_page = page_index + 1
                         
-                    progress.currentPage = current_page
-                    progress.progress = int((current_page / total_pages) * 100)
-                    db.commit()
-                    
-                    logger.info(f"[TRANSLATE] Processing page {current_page}/{total_pages} for {process_id}")
-                    
-                    # Extract content
-                    html_content = await self.extract_page_content(file_content, page_index)
-                    
-                    if html_content and len(html_content.strip()) > 0:
-                        logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from page {current_page}")
+                        # Update progress
+                        if progress:
+                            progress.currentPage = current_page
+                            progress.progress = int((current_page / total_pages) * 100)
+                            db.commit()
                         
-                        # Translate content
-                        translated_content = None
-                        
-                        # Split content if needed - use language-specific chunking
-                        max_chunk_size = self.get_max_chunk_size(to_lang)
-                        if len(html_content) > max_chunk_size * 1.2:  # Add 20% buffer
-                            chunks = self.split_content_into_chunks(html_content, max_chunk_size, to_lang)
-                            logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
+                        if html_content and len(html_content.strip()) > 0:
+                            logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from page {current_page}")
                             
-                            translated_chunks = []
-                            chunk_tasks = []
-                            for i, chunk in enumerate(chunks):
-                                chunk_id = f"{process_id}-p{current_page}-c{i+1}"
-                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)} (parallel)")
-                                # Prepare the coroutine for this chunk
-                                chunk_tasks.append(self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id))
-                            # Run all chunk translations in parallel, preserving order
-                            chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
-                            for i, result in enumerate(chunk_results):
-                                if isinstance(result, Exception):
-                                    logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(result)}")
-                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(result)}</div>")
-                                else:
-                                    translated_chunks.append(result)
-                            translated_content = self.combine_html_content(translated_chunks)
+                            # Translate content
+                            translated_content = None
+                            
+                            # Split content if needed - use language-specific chunking
+                            max_chunk_size = self.get_max_chunk_size(to_lang)
+                            if len(html_content) > max_chunk_size * 1.2:  # Add 20% buffer
+                                chunks = self.split_content_into_chunks(html_content, max_chunk_size, to_lang)
+                                logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
+                                
+                                translated_chunks = []
+                                chunk_tasks = []
+                                for j, chunk in enumerate(chunks):
+                                    chunk_id = f"{process_id}-p{current_page}-c{j+1}"
+                                    logger.info(f"[TRANSLATE] Translating chunk {j+1}/{len(chunks)} (parallel)")
+                                    # Prepare the coroutine for this chunk
+                                    chunk_tasks.append(self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id))
+                                # Run all chunk translations in parallel, preserving order
+                                chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+                                for j, result in enumerate(chunk_results):
+                                    if isinstance(result, Exception):
+                                        logger.error(f"[TRANSLATE] Error translating chunk {j+1}: {str(result)}")
+                                        translated_chunks.append(f"<div class='error'>Translation error in section {j+1}: {str(result)}</div>")
+                                    else:
+                                        translated_chunks.append(result)
+                                translated_content = self.combine_html_content(translated_chunks)
+                            else:
+                                chunk_id = f"{process_id}-p{current_page}"
+                                try:
+                                    translated_content = await self.translate_chunk(
+                                        html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
+                                    )
+                                except Exception as chunk_error:
+                                    logger.error(f"[TRANSLATE] Error translating page {current_page}: {str(chunk_error)}")
+                                    # Create an error message instead
+                                    translated_content = f"<div class='error'>Translation error on page {current_page}: {str(chunk_error)}</div>"
+                            
+                            # Save translation
+                            translation_chunk = TranslationChunk(
+                                processId=process_id,
+                                pageNumber=page_index,
+                                content=translated_content
+                            )
+                            db.add(translation_chunk)
+                            db.commit()
+                            
+                            translated_pages.append(page_index)
                         else:
-                            chunk_id = f"{process_id}-p{current_page}"
-                            try:
-                                translated_content = await self.translate_chunk(
-                                    html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                )
-                            except Exception as chunk_error:
-                                logger.error(f"[TRANSLATE] Error translating page {current_page}: {str(chunk_error)}")
-                                # Create an error message instead
-                                translated_content = f"<div class='error'>Translation error on page {current_page}: {str(chunk_error)}</div>"
-                        
-                        # Save translation
-                        translation_chunk = TranslationChunk(
-                            processId=process_id,
-                            pageNumber=page_index,
-                            content=translated_content
-                        )
-                        db.add(translation_chunk)
-                        db.commit()
-                        
-                        translated_pages.append(page_index)
-                    else:
-                        logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
+                            logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
 
             elif file_type in settings.SUPPORTED_DOC_TYPES:
                 # Handle non-PDF document types
