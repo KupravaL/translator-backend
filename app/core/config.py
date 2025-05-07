@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Document Translation API"
     API_VERSION: str = "1.0.0"
     
+    # CORS Configuration
+    CORS_ORIGINS: List[str] = DEFAULT_CORS_ORIGINS
+    
     # Security
     SECRET_KEY: str = "your-secret-key-here"  # Change in production
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8  # 8 days
@@ -83,16 +86,23 @@ settings = get_settings()
 # Process CORS_ORIGINS separately from pydantic
 cors_value = os.getenv("CORS_ORIGINS")
 if cors_value:
-    # If string is empty, use defaults
-    if not cors_value.strip():
-        settings.CORS_ORIGINS = DEFAULT_CORS_ORIGINS
-    # Try JSON format
-    elif cors_value.startswith("["):
-        try:
-            settings.CORS_ORIGINS = json.loads(cors_value)
-        except json.JSONDecodeError:
-            # Fallback to comma-separated if JSON parsing fails
-            settings.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
-    # Use comma-separated format
-    else:
-        settings.CORS_ORIGINS = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
+    try:
+        # If string is empty, use defaults
+        if not cors_value.strip():
+            settings = Settings(CORS_ORIGINS=DEFAULT_CORS_ORIGINS)
+        # Try JSON format
+        elif cors_value.startswith("["):
+            try:
+                origins = json.loads(cors_value)
+                settings = Settings(CORS_ORIGINS=origins)
+            except json.JSONDecodeError:
+                # Fallback to comma-separated if JSON parsing fails
+                origins = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
+                settings = Settings(CORS_ORIGINS=origins)
+        # Use comma-separated format
+        else:
+            origins = [origin.strip() for origin in cors_value.split(",") if origin.strip()]
+            settings = Settings(CORS_ORIGINS=origins)
+    except Exception as e:
+        print(f"Warning: Failed to process CORS_ORIGINS: {str(e)}")
+        settings = Settings(CORS_ORIGINS=DEFAULT_CORS_ORIGINS)
