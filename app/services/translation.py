@@ -46,6 +46,13 @@ class TranslationService:
             self.translation_model = None
             logger.warning("Google API key not configured - extraction and translation functionality will be unavailable")
         
+        # Add simple cache for extraction results
+        self.extraction_cache = {}
+        self.translation_cache = {}
+        
+        # Set maximum request timeout
+        self.api_timeout = 45  # 45 seconds per request max
+        
         # Language-specific configuration - uniform approach for all languages
         self.language_config = {
             # Default settings for all languages
@@ -637,9 +644,16 @@ Extract the content so it looks like in the initial document as much as possible
         page_start_time = time.time()
         logger.info(f"[GEMINI DEBUG] Starting Gemini extraction for page {page_index + 1}")
         
+        # Check cache first
+        cache_key = f"extract_{page_index}"
+        if cache_key in self.extraction_cache:
+            logger.info(f"[GEMINI DEBUG] Cache hit for page {page_index + 1}, returning cached content")
+            return self.extraction_cache[cache_key]
+        
         # Create a pixmap with improved resolution for better text extraction
         try:
-            pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(2, 2))
+            # Reduced resolution for faster processing
+            pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(1.5, 1.5))
             logger.info(f"[GEMINI DEBUG] Created pixmap for page {page_index + 1}")
             
             # Convert pixmap to bytes in memory
@@ -647,66 +661,23 @@ Extract the content so it looks like in the initial document as much as possible
             logger.info(f"[GEMINI DEBUG] Converted pixmap to bytes, size: {len(img_bytes)} bytes")
             
             try:
-                prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML and styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
+                prompt = """You are a professional HTML coder. Extract text from the document, preserving the text and basic structure. Convert to clean, semantic HTML.
 
-    Core Requirements:
-    1. Structure Analysis:
-    - Identify whether content is tabular data, form fields, or flowing text, or other type of formatting
-    - Use appropriate HTML elements based on content type
-    - Only use <table> for tabular information
-    - Use flex layouts for form-like content with label:value pairs
-    - Apply paragraph tags for standard text without forcing tabular structure
-    - Maintain original spacing and layout using proper HTML semantics
-    - Maintain all the styles, including bolden, italic or other types of formatting. 
-    - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
-    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
-    - DO NOT Include pages count. 
-    - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
-    - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Only create simple bullets regarding the style of bullets in initial documents. Standard dot/number bullets. 
+Key requirements:
+1. Structure Analysis:
+   - Use semantic HTML5 elements (<div>, <p>, <h1>-<h6>)
+   - Only use <table> for actual tabular data
+   - Preserve formatting (bold, italic, etc.)
+   - Format lists with proper list items
+   - Use proper <div class="page"> wrapper
 
-    2. HTML Element Selection:
-    - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
-    - Use heading tags (<h1> through <h6>) to maintain hierarchy
-    - For form-like content, implement:
-        <div class="form-row">
-        <div class="label">Label:</div>
-        <div class="value">Value</div>
-        </div>
-    - For actual tabular data use:
-        <table class="data-table">
-        <tr><th>Header</th></tr>
-        <tr><td>Data</td></tr>
-        </table>
+2. Return only HTML:
+   - Do not add any comments, explanations or notes
+   - Return only the converted HTML
+   - Keep all text content
+   - Preserve paragraph structure
 
-    3. Content Type Handling:
-    A. Standard Text:
-        <p class="text-content">Regular paragraph text without table structure.</p>
-    
-    B. Form Content (no visible borders):
-        <div class="form-section">
-            <div class="form-row">
-            <div class="label">Field Name:</div>
-            <div class="value">Field Value</div>
-            </div>
-        </div>
-    
-    C. Tabular Data:
-        <table class="data-table">
-            <tr>
-            <th>Column 1</th>
-            <th>Column 2</th>
-            </tr>
-            <tr>
-            <td>Value 1</td>
-            <td>Value 2</td>
-            </tr>
-        </table>
-
-    4. CSS Class Implementation:
-    - "form-section" for form content containers
-    - "data-table" for genuine tables
-    - "text-content" for regular text blocks
-    Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
+3. Ensure page contains properly structured content with semantic elements."""
 
                 contents = [
                     types.Content(
@@ -725,13 +696,21 @@ Extract the content so it looks like in the initial document as much as possible
                 )
                 
                 logger.info(f"[GEMINI DEBUG] Sending request to Gemini API for page {page_index + 1}")
+                
+                # Set up a timeout for the API call using asyncio
+                api_call_task = self.client.models.generate_content(
+                    model=self.extraction_model,
+                    contents=contents,
+                    config=generation_config
+                )
+                
+                # Add timeout
                 try:
-                    response = self.client.models.generate_content(
-                        model=self.extraction_model,
-                        contents=contents,
-                        config=generation_config
-                    )
+                    response = await asyncio.wait_for(api_call_task, timeout=self.api_timeout)
                     logger.info(f"[GEMINI DEBUG] Received response from Gemini API for page {page_index + 1}")
+                except asyncio.TimeoutError:
+                    logger.error(f"[GEMINI DEBUG] Gemini API request timed out after {self.api_timeout}s for page {page_index + 1}")
+                    raise TranslationError(f"Gemini API request timed out after {self.api_timeout}s", "TIMEOUT")
                 except Exception as api_error:
                     # Check specifically for rate limit errors
                     error_str = str(api_error)
@@ -837,6 +816,9 @@ Extract the content so it looks like in the initial document as much as possible
                 
                 logger.info(f"Successfully extracted content from page {page_index + 1}, length: {len(html_content)} chars")
                 
+                # Cache the result
+                self.extraction_cache[cache_key] = html_content
+                
                 return html_content
                 
             except Exception as e:
@@ -896,7 +878,13 @@ Extract the content so it looks like in the initial document as much as possible
         
         if not chunk_id:
             chunk_id = f"{hashlib.md5(html_content.encode()).hexdigest()}"[:7]
-                
+        
+        # Check cache first
+        cache_key = f"translate_{chunk_id}_{from_lang}_{to_lang}"
+        if cache_key in self.translation_cache:
+            logger.info(f"Cache hit for chunk {chunk_id}, returning cached translation")
+            return self.translation_cache[cache_key]
+        
         start_time = time.time()
         
         # Get the proper language display name (for better prompting)
@@ -1091,6 +1079,10 @@ Here is the HTML with text to translate:
                 
                 logger.info(f"Successfully translated chunk {chunk_id}, length: {len(translated_text)} chars")
                 logger.info(f"Translation took {time.time() - start_time:.2f} seconds")
+                
+                # Cache the successful translation
+                self.translation_cache[cache_key] = translated_text
+                
                 return translated_text
                     
             except Exception as e:
@@ -1808,7 +1800,7 @@ Here is the HTML with text to translate:
                     logger.info(f"[TRANSLATE DEBUG] Updated total pages in database")
                 
                 # Process pages in parallel batches
-                batch_size = 3  # Process 3 pages at a time (adjust as needed)
+                batch_size = 8  # Process 8 pages at a time (increased from 3)
                 logger.info(f"[TRANSLATE DEBUG] Starting batch processing with batch_size={batch_size}")
                 
                 for batch_start in range(0, total_pages, batch_size):
