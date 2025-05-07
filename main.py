@@ -27,7 +27,7 @@ app.add_middleware(
 # Include routers
 app.include_router(
     translation.router,
-    prefix="/api/v1/translation",
+    prefix="/api",
     tags=["translation"]
 )
 

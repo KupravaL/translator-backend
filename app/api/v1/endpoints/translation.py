@@ -11,7 +11,7 @@ import uuid
 router = APIRouter()
 logger = loggers["api"]
 
-@router.post("/translate")
+@router.post("/documents/translate")
 async def create_translation(
     file: UploadFile = File(...),
     from_lang: str = "en",
