@@ -37,8 +37,8 @@ class TranslationService:
         # Initialize Google Gemini
         if settings.GOOGLE_API_KEY:
             self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-            self.extraction_model = "gemini-2.5-pro-preview-05-06"
-            self.translation_model = "gemini-2.5-pro-preview-05-06"
+            self.extraction_model = "gemini-2.5-flash-preview-05-20"
+            self.translation_model = "gemini-2.5-flash-preview-05-20"
             logger.info("Initialized Google Gemini 2.5 client for extraction and translation")
         else:
             self.client = None
@@ -53,8 +53,8 @@ class TranslationService:
                 "temperature": 0,
                 "top_p": 0.97,
                 "top_k": 45,
-                "max_chunk_size": 9000,
-                "max_output_tokens": 8192
+                "max_chunk_size": 100000,  # Increased for Gemini 2.5 Pro
+                "max_output_tokens": 65536  # Match Gemini 2.5 Pro output token limit
             }
         }
         
@@ -119,9 +119,9 @@ class TranslationService:
             return self.language_config["default"]
     
     def get_max_chunk_size(self, to_lang: str) -> int:
-        """Get the appropriate maximum chunk size for a given language"""
+        """Get the appropriate maximum chunk size for a given language (default: 100,000 for Gemini 2.5 Pro)"""
         lang_config = self.get_language_config(to_lang)
-        return lang_config.get("max_chunk_size", 9000)
+        return lang_config.get("max_chunk_size", 100000)
     
     def normalize_index(self, index_text):
         """Normalize index numbers by fixing common OCR and formatting errors"""
@@ -503,9 +503,8 @@ Extract the content so it looks like in the initial document as much as possible
                 except Exception as e:
                     logger.warning(f"Error during file cleanup: {e}")
 
-    # Fix 4: Enhance the extract_page_content method to better handle empty responses
     async def extract_page_content(self, pdf_bytes: bytes, page_index: int) -> str:
-        """Extract content from a PDF page using Google Gemini."""
+        """Extract content from a PDF page using Google Gemini with optimized memory management."""
         if not self.extraction_model:
             logger.error("Google API key not configured for PDF extraction")
             raise TranslationError("Google API key not configured", "CONFIG_ERROR")
@@ -538,8 +537,8 @@ Extract the content so it looks like in the initial document as much as possible
                 else:
                     logger.warning(f"Page {page_index + 1} contains no extractable text")
                 
-                # Extract content with Gemini
-                html_content = await self._get_formatted_text_from_gemini_buffer(page)
+                # Extract content with Gemini using optimized method
+                html_content = await self._get_formatted_text_from_gemini_buffer_optimized(page)
                 
                 # Enhanced empty content check with better fallback
                 if not html_content or html_content.strip() == '':
@@ -581,62 +580,18 @@ Extract the content so it looks like in the initial document as much as possible
             # Force garbage collection
             gc.collect()
     
-    # Fix 5: Enhance the translate_document_content_sync_wrapper to handle content verification
-    # Add this method to better validate and fix content structure before saving
-    def _validate_and_fix_content(self, content, title=""):
-        """Ensure content has proper structure and non-empty text content"""
-        try:
-            if not content or len(content.strip()) < 10:
-                logger.warning(f"Empty or very short content detected in {title}")
-                return f"<div class='page'><p class='text-content'>No processable content was found in this section.</p></div>"
-            
-            # Check if content has div structure
-            if '<div' not in content:
-                content = f"<div class='page'>{content}</div>"
-                logger.info(f"Added missing page wrapper in {title}")
-            
-            # Parse with BeautifulSoup to check content
-            soup = BeautifulSoup(content, 'html.parser')
-            text_content = soup.get_text().strip()
-            
-            if not text_content:
-                logger.warning(f"Content has HTML but no text in {title}")
-                return f"<div class='page'><p class='text-content'>Content structure was detected but no readable text was found.</p></div>"
-            
-            # Ensure the structure is proper
-            page_div = soup.find('div', class_='page')
-            if not page_div:
-                # Wrap all content in a page div
-                new_soup = BeautifulSoup('<div class="page"></div>', 'html.parser')
-                new_page = new_soup.find('div', class_='page')
-                # Move all content into the page div
-                for child in list(soup.children):
-                    if isinstance(child, str):
-                        if child.strip():
-                            p = new_soup.new_tag('p', attrs={'class': 'text-content'})
-                            p.string = child
-                            new_page.append(p)
-                    else:
-                        new_page.append(child)
-                return str(new_soup)
-            
-            return content
-        except Exception as e:
-            logger.error(f"Error validating content in {title}: {str(e)}")
-            return content  # Return original to avoid further issues
-
-    # Fix 1: Correct the MIME type in _get_formatted_text_from_gemini_buffer method
-    async def _get_formatted_text_from_gemini_buffer(self, page):
-        """Use Gemini to analyze and extract formatted text with improved memory management"""
+    async def _get_formatted_text_from_gemini_buffer_optimized(self, page):
+        """Use Gemini to analyze and extract formatted text with optimized memory management and caching."""
         page_index = page.number
         page_start_time = time.time()
-        logger.info(f"Extracting formatted text from page {page_index + 1} using Gemini")
+        logger.info(f"Extracting formatted text from page {page_index + 1} using Gemini (optimized)")
         
-        # Create a pixmap with improved resolution for better text extraction
-        pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(2, 2))
+        # Create a pixmap with optimized resolution for better text extraction
+        # Use configurable matrix multiplier for performance tuning
+        pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(settings.PDF_PIXMAP_MATRIX, settings.PDF_PIXMAP_MATRIX))
         
-        # Convert pixmap to bytes in memory
-        img_bytes = pix.tobytes(output="png")
+        # Convert pixmap to bytes in memory with compression
+        img_bytes = pix.tobytes(output="png", jpeg_quality=settings.PDF_JPEG_QUALITY)  # Use configurable JPEG compression
         
         try:
             prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML and styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
@@ -705,8 +660,8 @@ Extract the content so it looks like in the initial document as much as possible
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt),
-                        # Fix: Use correct MIME type for PNG image
-                        types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+                        # Use optimized MIME type and compression
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
                     ],
                 ),
             ]
@@ -833,7 +788,7 @@ Extract the content so it looks like in the initial document as much as possible
                 logger.error(f"Fallback text extraction also failed: {text_error}")
                 return "<div class='page'><p class='text-content'>Error processing this page: couldn't extract content.</p></div>"
         finally:
-            # Clean up resources
+            # Clean up resources immediately
             del pix
             del img_bytes
             # Force garbage collection

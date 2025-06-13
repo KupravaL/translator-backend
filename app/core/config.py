@@ -61,6 +61,12 @@ class Settings(BaseModel):
     STATUS_CHECK_TIMEOUT: int = 8     # Timeout for status check operations
     TRANSLATION_TIMEOUT: int = 600    # Timeout for translation operations (10 minutes)
     
+    # PDF Processing Performance Settings
+    PDF_PIXMAP_MATRIX: float = 1.5    # Matrix multiplier for PDF pixmap generation (was 2.0)
+    PDF_MAX_CONCURRENT_PAGES: int = 3 # Maximum concurrent pages for parallel processing
+    PDF_JPEG_QUALITY: int = 85        # JPEG quality for image compression (0-100)
+    PDF_CHUNK_SIZE: int = 10000       # Maximum characters per PDF chunk before splitting
+    
     # Database connection limits
     DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "10"))
     DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "20"))
