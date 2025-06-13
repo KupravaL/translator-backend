@@ -387,7 +387,8 @@ Extract the content so it looks like in the initial document as much as possible
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt),
-                        types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
+                        # Use PNG format for better quality and compatibility
+                        types.Part.from_bytes(data=image_data, mime_type="image/png")
                     ],
                 ),
             ]
@@ -590,8 +591,8 @@ Extract the content so it looks like in the initial document as much as possible
         # Use configurable matrix multiplier for performance tuning
         pix = page.get_pixmap(alpha=False, matrix=fitz.Matrix(settings.PDF_PIXMAP_MATRIX, settings.PDF_PIXMAP_MATRIX))
         
-        # Convert pixmap to bytes in memory with compression
-        img_bytes = pix.tobytes(output="png", jpeg_quality=settings.PDF_JPEG_QUALITY)  # Use configurable JPEG compression
+        # Convert pixmap to bytes in memory - use PNG format for better quality and compatibility
+        img_bytes = pix.tobytes(output="png")  # Remove jpeg_quality parameter as it's not supported
         
         try:
             prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML and styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
@@ -660,8 +661,8 @@ Extract the content so it looks like in the initial document as much as possible
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt),
-                        # Use optimized MIME type and compression
-                        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+                        # Use PNG format for better quality and compatibility
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/png")
                     ],
                 ),
             ]

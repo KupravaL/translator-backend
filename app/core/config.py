@@ -64,7 +64,7 @@ class Settings(BaseModel):
     # PDF Processing Performance Settings
     PDF_PIXMAP_MATRIX: float = 1.5    # Matrix multiplier for PDF pixmap generation (was 2.0)
     PDF_MAX_CONCURRENT_PAGES: int = 3 # Maximum concurrent pages for parallel processing
-    PDF_JPEG_QUALITY: int = 85        # JPEG quality for image compression (0-100)
+    PDF_JPEG_QUALITY: int = 85        # JPEG quality setting (kept for compatibility, but now using PNG format)
     PDF_CHUNK_SIZE: int = 10000       # Maximum characters per PDF chunk before splitting
     
     # Database connection limits
