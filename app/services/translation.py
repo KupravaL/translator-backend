@@ -404,6 +404,17 @@ Extract the content so it looks like in the initial document as much as possible
                 config=generation_config
             )
             
+            # Check if response is valid and has text content
+            if not response:
+                logger.error(f"Null response from Gemini for image extraction")
+                raise TranslationError("Null response from Gemini API", "API_ERROR")
+            
+            if not hasattr(response, 'text') or response.text is None:
+                logger.error(f"Response missing text attribute for image extraction")
+                logger.error(f"Response type: {type(response)}")
+                logger.error(f"Response attributes: {dir(response)}")
+                raise TranslationError("Response missing text content", "API_ERROR")
+            
             html_content = response.text.strip()
             html_content = html_content.replace('```html', '').replace('```', '').strip()
             
@@ -678,6 +689,17 @@ Extract the content so it looks like in the initial document as much as possible
                 config=generation_config
             )
             
+            # Check if response is valid and has text content
+            if not response:
+                logger.error(f"Null response from Gemini for page {page_index + 1}")
+                raise TranslationError("Null response from Gemini API", "API_ERROR")
+            
+            if not hasattr(response, 'text') or response.text is None:
+                logger.error(f"Response missing text attribute for page {page_index + 1}")
+                logger.error(f"Response type: {type(response)}")
+                logger.error(f"Response attributes: {dir(response)}")
+                raise TranslationError("Response missing text content", "API_ERROR")
+            
             html_content = response.text.strip()
             html_content = html_content.replace('```html', '').replace('```', '').strip()
             
@@ -892,6 +914,17 @@ Here is the HTML with text to translate:
                     contents=contents,
                     config=generation_config
                 )
+                
+                # Check if response is valid and has text content
+                if not response:
+                    logger.error(f"Null response from Gemini for chunk {chunk_id}")
+                    raise TranslationError("Null response from Gemini API", "API_ERROR")
+                
+                if not hasattr(response, 'text') or response.text is None:
+                    logger.error(f"Response missing text attribute for chunk {chunk_id}")
+                    logger.error(f"Response type: {type(response)}")
+                    logger.error(f"Response attributes: {dir(response)}")
+                    raise TranslationError("Response missing text content", "API_ERROR")
                 
                 translation_duration = time.time() - translation_start
                 logger.info(f"Gemini completed translation for chunk {chunk_id} in {translation_duration:.2f} seconds")

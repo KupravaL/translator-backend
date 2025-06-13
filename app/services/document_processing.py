@@ -166,6 +166,10 @@ Extract the content so it looks like in the initial document as much as possible
                              generation_config={"temperature": 0.1}
                          )
                          
+                         # Check if response is valid and has text content
+                         if not response or not response.text:
+                             raise Exception("Empty or invalid response from Gemini API")
+                         
                          html_content = response.text.strip()
                          
                          # Clean up any code block markers that might be in the output
@@ -400,6 +404,10 @@ Note: This file may appear in an unusual format. Focus on extracting the actual 
                             generation_config={"temperature": 0.1}
                         )
                         
+                        # Check if response is valid and has text content
+                        if not response or not response.text:
+                            raise Exception("Empty or invalid response from Gemini API")
+                        
                         html_content = response.text.strip()
                         html_content = html_content.replace('```html', '').replace('```', '').strip()
                         
@@ -569,6 +577,10 @@ Extract the content so it looks like in the initial document as much as possible
                                     generation_config={"temperature": 0.1}
                                 )
                                 
+                                # Check if response is valid and has text content
+                                if not response or not response.text:
+                                    raise Exception("Empty or invalid response from Gemini API")
+                                
                                 html_content = response.text.strip()
                                 html_content = html_content.replace('```html', '').replace('```', '').strip()
                                 
@@ -640,6 +652,10 @@ Extract the content so it looks like in the initial document as much as possible
                                     generation_config={"temperature": 0.1}
                                 )
                             
+                                # Check if response is valid and has text content
+                                if not response or not response.text:
+                                    raise Exception("Empty or invalid response from Gemini API")
+                                
                                 html_content = response.text.strip()
                                 html_content = html_content.replace('```html', '').replace('```', '').strip()
                                 
