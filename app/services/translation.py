@@ -77,6 +77,8 @@ class TranslationService:
             "japanese": "ja",
             "chinese": "zh",
             "arabic": "ar",
+            "armenian": "hy",
+            "azerbaijani": "az"
             # Add more as needed
         }
         
@@ -92,7 +94,9 @@ class TranslationService:
             "it": "Italian",
             "ja": "Japanese",
             "zh": "Chinese",
-            "ar": "Arabic"
+            "ar": "Arabic",
+            "hy": "Armenian",
+            "az": "Azerbaijani"
         })
 
     def get_language_code(self, language: str) -> str:
