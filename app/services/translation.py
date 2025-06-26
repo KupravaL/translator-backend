@@ -610,67 +610,7 @@ Extract the content so it looks like in the initial document as much as possible
         img_bytes = pix.tobytes(output="png")  # Remove jpeg_quality parameter as it's not supported
         
         try:
-            prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML and styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure.
-
-    Core Requirements:
-    1. Structure Analysis:
-    - Identify whether content is tabular data, form fields, or flowing text, or other type of formatting
-    - Use appropriate HTML elements based on content type
-    - Only use <table> for tabular information
-    - Use flex layouts for form-like content with label:value pairs
-    - Apply paragraph tags for standard text without forcing tabular structure
-    - Maintain original spacing and layout using proper HTML semantics
-    - Maintain all the styles, including bolden, italic or other types of formatting. 
-    - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling.
-    - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table).
-    - DO NOT Include pages count. 
-    - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case.
-    - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Only create simple bullets regarding the style of bullets in initial documents. Standard dot/number bullets. 
-
-    2. HTML Element Selection:
-    - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.)
-    - Use heading tags (<h1> through <h6>) to maintain hierarchy
-    - For form-like content, implement:
-        <div class="form-row">
-        <div class="label">Label:</div>
-        <div class="value">Value</div>
-        </div>
-    - For actual tabular data use:
-        <table class="data-table">
-        <tr><th>Header</th></tr>
-        <tr><td>Data</td></tr>
-        </table>
-
-    3. Content Type Handling:
-    A. Standard Text:
-        <p class="text-content">Regular paragraph text without table structure.</p>
-    
-    B. Form Content (no visible borders):
-        <div class="form-section">
-            <div class="form-row">
-            <div class="label">Field Name:</div>
-            <div class="value">Field Value</div>
-            </div>
-        </div>
-    
-    C. Tabular Data:
-        <table class="data-table">
-            <tr>
-            <th>Column 1</th>
-            <th>Column 2</th>
-            </tr>
-            <tr>
-            <td>Value 1</td>
-            <td>Value 2</td>
-            </tr>
-        </table>
-
-    4. CSS Class Implementation:
-    - "form-section" for form content containers
-    - "data-table" for genuine tables
-    - "text-content" for regular text blocks
-    Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
-
+            prompt = """You are a professional HTML coder. Extract text from the document, preserving all the HTML and styles. Analyze and Convert this document to clean, semantic HTML while intelligently detecting its structure. Core Requirements: 1. Structure Analysis: - Identify whether content is tabular data, form fields, or flowing text, or other type of formatting - Use appropriate HTML elements based on content type - Only use <table> for tabular information - Use flex layouts for form-like content with label:value pairs - Apply paragraph tags for standard text without forcing tabular structure - Maintain original spacing and layout using proper HTML semantics - Maintain all the styles, including bolden, italic or other types of formatting. - Take special attention to tables, if there are any. Sometimes 1 row/column can include several rows/columns insidet them, so preseve the exact formatting how it's in the document. MAKE SURE TO ALWAYS CREATE BORDERS BETWEEN CELLS WHEN YOU CREATE TABLES. Just simple tables without any complex styling. - If the text is splitted to columns, but there are no borders between the columns, add some borders (full table). - DO NOT Include pages count. - If it is an instruction/technical documentation/manual with images, make sure to translate text and preserve all the text that will be around images of the object - just create a list for this case. - Make sure to format lists properly. Each bullet (numbered or not), should be on separate string. Only create simple bullets regarding the style of bullets in initial documents. Standard dot/number bullets. 2. HTML Element Selection: - Implement semantic HTML5 elements (<article>, <section>, <header>, etc.) - Use heading tags (<h1> through <h6>) to maintain hierarchy - For form-like content, implement: <div class="form-row"> <div class="label">Label:</div> <div class="value">Value</div> </div> - For actual tabular data use: <table class="data-table"> <tr><th>Header</th></tr> <tr><td>Data</td></tr> </table> 3. Content Type Handling: A. Standard Text: <p class="text-content">Regular paragraph text without table structure.</p> B. Form Content (no visible borders): <div class="form-section"> <div class="form-row"> <div class="label">Field Name:</div> <div class="value">Field Value</div> </div> </div> C. Tabular Data: <table class="data-table"> <tr> <th>Column 1</th> <th>Column 2</th> </tr> <tr> <td>Value 1</td> <td>Value 2</td> </tr> </table> 4. CSS Class Implementation: - "form-section" for form content containers - "data-table" for genuine tables - "text-content" for regular text blocks 5. Content Preservation Rules: - Extract and preserve ALL text content EXACTLY as it appears in the original document - DO NOT modify, replace, or alter personal names, surnames, or street addresses - Keep all proper nouns, place names, and personal identifiers unchanged - Maintain original spelling and formatting of names and addresses Carefully analyze each section of the document and apply the most appropriate HTML structure. Do not include any images in the output, even if present in the source. Return only valid, well-formed HTML."""
             contents = [
                 types.Content(
                     role="user",
