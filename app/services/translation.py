@@ -870,29 +870,7 @@ Extract the content so it looks like in the initial document as much as possible
                     logger.info(f"Chunk {chunk_id} content length: {len(html_content_with_tags)} chars")
                 
                 # Create a unified prompt for all languages with strong anti-placeholder instructions
-                prompt = f"""You are a professional translator with a knowledge of HTML. Translate all text content in this HTML to {to_lang_display}.
-
-STRICT AND CRITICAL RULES:
-1. Translate ALL text content to {to_lang_display} regardless of what language it's in
-2. DO NOT replace any words with placeholders like '$variable' or similar patterns
-3. PRESERVE ALL HTML tags, attributes, CSS classes, and structure EXACTLY as they are in the initial text
-4. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML
-5. Keep all spacing, indentation, and formatting consistent with the input
-6. Ensure your output is valid HTML that can be rendered directly in a browser AND Google Docs/Word
-7. DO NOT translate content within HTML comments marked with <!--PRESERVE--> and <!--/PRESERVE-->
-8. DO NOT translate content within <style> tags - they are used for document styling and will be parsed by front
-9. Don't translate these specific items:
-   - Technical codes and identifiers (like product IDs, registration numbers)
-   - Email addresses and URLs
-   - Brand and company names
-   - Technical standards (like EN 14411:2016) - but make sure to translate technical descriptions always
-   - Unit measurements and technical values (like NPD, N/mm2, etc.)
-10. Ensure that sentences are logical and understandable. You can rearrange words positions within the sentence but make sure it sounds well for the language you are translating to.
-
-Here is the HTML with text to translate:
-
-{html_content_with_tags}
-"""
+                prompt = f"""You are a professional translator with a knowledge of HTML. Translate all text content in this HTML to {to_lang_display}. STRICT AND CRITICAL RULES: 1. Translate ALL text content to {to_lang_display} regardless of what language it's in 2. DO NOT replace any words with placeholders like '$variable' or similar patterns 3. PRESERVE ALL HTML tags, attributes, CSS classes, and structure EXACTLY as they are in the initial text 4. Do not add any commentary, explanations, or notes to your response - ONLY return the translated HTML 5. Keep all spacing, indentation, and formatting consistent with the input 6. Ensure your output is valid HTML that can be rendered directly in a browser AND Google Docs/Word 7. DO NOT translate content within HTML comments marked with <!--PRESERVE--> and <!--/PRESERVE--> 8. DO NOT translate content within <style> tags - they are used for document styling and will be parsed by front 9. Don't translate these specific items: - Technical codes and identifiers (like product IDs, registration numbers) - Email addresses and URLs - Brand and company names - Technical standards (like EN 14411:2016) - but make sure to translate technical descriptions always - Unit measurements and technical values (like NPD, N/mm2, etc.) 10. DO NOT replace personal names, surnames of persons, or street addresses - translate them to the target language with preserving the actual name/surname/street address in the target language. For Example if it's კოტე მარჯანიშვილის ქუჩა, the translation will be Kote Marjanishvili street, and vice versa (for all the languages).  11. Ensure that sentences are logical and understandable. You can rearrange words positions within the sentence but make sure it sounds well for the language you are translating to. Here is the HTML with text to translate: {html_content_with_tags} """
 
                 logger.info(f"Sending chunk {chunk_id} to Gemini for translation (attempt {attempt}/{retries})")
                 translation_start = time.time()
