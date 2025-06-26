@@ -37,8 +37,8 @@ class TranslationService:
         # Initialize Google Gemini
         if settings.GOOGLE_API_KEY:
             self.client = genai.Client(api_key=settings.GOOGLE_API_KEY)
-            self.extraction_model = "gemini-2.5-flash-preview-05-20"
-            self.translation_model = "gemini-2.5-flash-preview-05-20"
+            self.extraction_model = "gemini-2.5-pro"
+            self.translation_model = "gemini-2.5-pro"
             logger.info("Initialized Google Gemini 2.5 client for extraction and translation")
         else:
             self.client = None
