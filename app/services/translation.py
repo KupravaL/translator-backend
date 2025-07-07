@@ -1605,75 +1605,49 @@ Extract the content so it looks like in the initial document as much as possible
                 buffer = io.BytesIO(file_content)
                 with fitz.open(stream=buffer, filetype="pdf") as doc:
                     total_pages = len(doc)
-                
                 logger.info(f"[TRANSLATE] PDF has {total_pages} pages for {process_id}")
-                
-                # Update total pages
                 if progress:
                     progress.totalPages = total_pages
                     db.commit()
-                
-                # Process each page
-                for page_index in range(total_pages):
-                    current_page = page_index + 1
-                    
-                    # Update progress
-                    progress = db.query(TranslationProgress).filter(
-                        TranslationProgress.processId == process_id
-                    ).first()
-                    
-                    if not progress or progress.status == "failed":
-                        logger.warning(f"[TRANSLATE] Process was canceled or failed: {process_id}")
-                        return
-                        
-                    progress.currentPage = current_page
-                    progress.progress = int((current_page / total_pages) * 100)
-                    db.commit()
-                    
-                    logger.info(f"[TRANSLATE] Processing page {current_page}/{total_pages} for {process_id}")
-                    
-                    # Extract content
-                    html_content = await self.extract_page_content(file_content, page_index)
-                    
-                    if html_content and len(html_content.strip()) > 0:
-                        logger.info(f"[TRANSLATE] Extracted {len(html_content)} chars from page {current_page}")
-                        
-                        # Translate content
-                        translated_content = None
-                        
-                        # Split content if needed - use language-specific chunking
-                        max_chunk_size = self.get_max_chunk_size(to_lang)
-                        if len(html_content) > max_chunk_size * 1.2:  # Add 20% buffer
-                            chunks = self.split_content_into_chunks(html_content, max_chunk_size, to_lang)
-                            logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
-                            
-                            translated_chunks = []
-                            for i, chunk in enumerate(chunks):
-                                chunk_id = f"{process_id}-p{current_page}-c{i+1}"
-                                logger.info(f"[TRANSLATE] Translating chunk {i+1}/{len(chunks)}")
-                                try:
-                                    chunk_result = await self.translate_chunk(
-                                        chunk, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                    )
-                                    translated_chunks.append(chunk_result)
-                                except Exception as chunk_error:
-                                    logger.error(f"[TRANSLATE] Error translating chunk {i+1}: {str(chunk_error)}")
-                                    # Continue with other chunks but mark this one as failed
-                                    translated_chunks.append(f"<div class='error'>Translation error in section {i+1}: {str(chunk_error)}</div>")
-                                
-                            translated_content = self.combine_html_content(translated_chunks)
-                        else:
-                            chunk_id = f"{process_id}-p{current_page}"
-                            try:
+
+                # --- PARALLEL EXTRACTION AND TRANSLATION ---
+                import asyncio
+                semaphore = asyncio.Semaphore(3)  # Limit concurrency
+
+                async def extract_and_translate(page_index):
+                    async with semaphore:
+                        current_page = page_index + 1
+                        # Extract content
+                        html_content = await self.extract_page_content(file_content, page_index)
+                        if html_content and len(html_content.strip()) > 0:
+                            max_chunk_size = self.get_max_chunk_size(to_lang)
+                            if len(html_content) > max_chunk_size * 1.2:
+                                chunks = self.split_content_into_chunks(html_content, max_chunk_size, to_lang)
+                                logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
+                                chunk_results = await asyncio.gather(*[
+                                    self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=f"{process_id}-p{current_page}-c{i+1}")
+                                    for i, chunk in enumerate(chunks)
+                                ])
+                                translated_content = self.combine_html_content(chunk_results)
+                            else:
+                                chunk_id = f"{process_id}-p{current_page}"
                                 translated_content = await self.translate_chunk(
                                     html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
                                 )
-                            except Exception as chunk_error:
-                                logger.error(f"[TRANSLATE] Error translating page {current_page}: {str(chunk_error)}")
-                                # Create an error message instead
-                                translated_content = f"<div class='error'>Translation error on page {current_page}: {str(chunk_error)}</div>"
-                        
-                        # Save translation
+                            return (page_index, translated_content)
+                        else:
+                            logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
+                            return (page_index, None)
+
+                # Run extraction+translation for all pages in parallel
+                results = await asyncio.gather(*[
+                    extract_and_translate(page_index) for page_index in range(total_pages)
+                ])
+                # Sort results by page_index
+                results.sort(key=lambda x: x[0])
+                # Save translations sequentially
+                for page_index, translated_content in results:
+                    if translated_content is not None:
                         translation_chunk = TranslationChunk(
                             processId=process_id,
                             pageNumber=page_index,
@@ -1681,10 +1655,13 @@ Extract the content so it looks like in the initial document as much as possible
                         )
                         db.add(translation_chunk)
                         db.commit()
-                        
                         translated_pages.append(page_index)
-                    else:
-                        logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
+                # Update progress to completed
+                if progress:
+                    progress.status = "completed"
+                    progress.progress = 100
+                    progress.currentPage = total_pages
+                    db.commit()
 
             elif file_type in settings.SUPPORTED_DOC_TYPES:
                 # Handle non-PDF document types
