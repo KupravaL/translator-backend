@@ -49,7 +49,6 @@ class TranslationService:
         # Rate limiting and backoff settings
         self.last_api_call = 0
         self.api_call_interval = 0.5  # Minimum 500ms between API calls
-        self.rate_limit_lock = asyncio.Lock()
         
         # Health monitoring
         self.active_translations = {}
@@ -845,30 +844,28 @@ Extract the content so it looks like in the initial document as much as possible
                     response_mime_type="text/plain"
                 )
 
-                # Rate limiting and timeout for API call
-                async with self.rate_limit_lock:
-                    # Ensure minimum interval between API calls
-                    current_time = time.time()
-                    time_since_last_call = current_time - self.last_api_call
-                    if time_since_last_call < self.api_call_interval:
-                        wait_time = self.api_call_interval - time_since_last_call
-                        logger.debug(f"Rate limiting: waiting {wait_time:.2f}s before API call")
-                        await asyncio.sleep(wait_time)
-                    
-                    try:
-                        response = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                self.client.models.generate_content,
-                                model=self.translation_model,
-                                contents=contents,
-                                config=generation_config
-                            ),
-                            timeout=180  # 3 minutes timeout for API call
-                        )
-                        self.last_api_call = time.time()
-                    except asyncio.TimeoutError:
-                        logger.error(f"Gemini API timeout for chunk {chunk_id}")
-                        raise TranslationError("Gemini API timeout", "API_TIMEOUT")
+                # Simple rate limiting and timeout for API call
+                current_time = time.time()
+                time_since_last_call = current_time - self.last_api_call
+                if time_since_last_call < self.api_call_interval:
+                    wait_time = self.api_call_interval - time_since_last_call
+                    logger.debug(f"Rate limiting: waiting {wait_time:.2f}s before API call")
+                    await asyncio.sleep(wait_time)
+                
+                try:
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.client.models.generate_content,
+                            model=self.translation_model,
+                            contents=contents,
+                            config=generation_config
+                        ),
+                        timeout=180  # 3 minutes timeout for API call
+                    )
+                    self.last_api_call = time.time()
+                except asyncio.TimeoutError:
+                    logger.error(f"Gemini API timeout for chunk {chunk_id}")
+                    raise TranslationError("Gemini API timeout", "API_TIMEOUT")
                 
                 # Check if response is valid and has text content
                 if not response:
@@ -2020,7 +2017,8 @@ Extract the content so it looks like in the initial document as much as possible
             "stats": self.translation_stats.copy(),
             "api_rate_limit": {
                 "last_call": self.last_api_call,
-                "interval": self.api_call_interval
+                "interval": self.api_call_interval,
+                "time_since_last_call": time.time() - self.last_api_call if self.last_api_call > 0 else None
             },
             "client_configured": self.client is not None
         }
@@ -2048,6 +2046,8 @@ Extract the content so it looks like in the initial document as much as possible
         if total_completed > 0:
             current_avg = self.translation_stats["average_duration"]
             self.translation_stats["average_duration"] = (current_avg * (total_completed - 1) + duration) / total_completed
+    
+
 
 # Create a singleton instance
 translation_service = TranslationService()
