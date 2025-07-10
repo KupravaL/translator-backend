@@ -46,6 +46,20 @@ class TranslationService:
             self.translation_model = None
             logger.warning("Google API key not configured - extraction and translation functionality will be unavailable")
         
+        # Rate limiting and backoff settings
+        self.last_api_call = 0
+        self.api_call_interval = 0.5  # Minimum 500ms between API calls
+        self.rate_limit_lock = asyncio.Lock()
+        
+        # Health monitoring
+        self.active_translations = {}
+        self.translation_stats = {
+            "total_translations": 0,
+            "successful_translations": 0,
+            "failed_translations": 0,
+            "average_duration": 0
+        }
+        
         # Language-specific configuration - uniform approach for all languages
         self.language_config = {
             # Default settings for all languages
@@ -831,11 +845,30 @@ Extract the content so it looks like in the initial document as much as possible
                     response_mime_type="text/plain"
                 )
 
-                response = self.client.models.generate_content(
-                    model=self.translation_model,
-                    contents=contents,
-                    config=generation_config
-                )
+                # Rate limiting and timeout for API call
+                async with self.rate_limit_lock:
+                    # Ensure minimum interval between API calls
+                    current_time = time.time()
+                    time_since_last_call = current_time - self.last_api_call
+                    if time_since_last_call < self.api_call_interval:
+                        wait_time = self.api_call_interval - time_since_last_call
+                        logger.debug(f"Rate limiting: waiting {wait_time:.2f}s before API call")
+                        await asyncio.sleep(wait_time)
+                    
+                    try:
+                        response = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.client.models.generate_content,
+                                model=self.translation_model,
+                                contents=contents,
+                                config=generation_config
+                            ),
+                            timeout=180  # 3 minutes timeout for API call
+                        )
+                        self.last_api_call = time.time()
+                    except asyncio.TimeoutError:
+                        logger.error(f"Gemini API timeout for chunk {chunk_id}")
+                        raise TranslationError("Gemini API timeout", "API_TIMEOUT")
                 
                 # Check if response is valid and has text content
                 if not response:
@@ -1599,6 +1632,9 @@ Extract the content so it looks like in the initial document as much as possible
             user_id = None
             
         try:
+            # Track translation start
+            self._track_translation_start(process_id)
+            
             # Handle PDFs
             if file_type in settings.SUPPORTED_DOC_TYPES and 'pdf' in file_type:
                 # Get PDF page count
@@ -1610,42 +1646,118 @@ Extract the content so it looks like in the initial document as much as possible
                     progress.totalPages = total_pages
                     db.commit()
 
-                # --- PARALLEL EXTRACTION AND TRANSLATION ---
+                # --- PARALLEL EXTRACTION AND TRANSLATION WITH REAL-TIME PROGRESS ---
                 import asyncio
                 semaphore = asyncio.Semaphore(3)  # Limit concurrency
+                completed_pages = 0
+                progress_lock = asyncio.Lock()
+
+                async def update_progress():
+                    """Update progress in the database"""
+                    async with progress_lock:
+                        nonlocal completed_pages
+                        completed_pages += 1
+                        current_progress = min(90, (completed_pages / total_pages) * 90)  # Cap at 90% until final save
+                        
+                        # Refresh progress object to avoid stale data
+                        db.refresh(progress)
+                        progress.currentPage = completed_pages
+                        progress.progress = current_progress
+                        db.commit()
+                        logger.info(f"[TRANSLATE] Progress updated: {completed_pages}/{total_pages} pages ({current_progress:.1f}%)")
 
                 async def extract_and_translate(page_index):
                     async with semaphore:
                         current_page = page_index + 1
-                        # Extract content
-                        html_content = await self.extract_page_content(file_content, page_index)
-                        if html_content and len(html_content.strip()) > 0:
-                            max_chunk_size = self.get_max_chunk_size(to_lang)
-                            if len(html_content) > max_chunk_size * 1.2:
-                                chunks = self.split_content_into_chunks(html_content, max_chunk_size, to_lang)
-                                logger.info(f"[TRANSLATE] Split into {len(chunks)} chunks for {to_lang} translation")
-                                chunk_results = await asyncio.gather(*[
-                                    self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=f"{process_id}-p{current_page}-c{i+1}")
-                                    for i, chunk in enumerate(chunks)
-                                ])
-                                translated_content = self.combine_html_content(chunk_results)
+                        logger.info(f"[TRANSLATE] Starting page {current_page}/{total_pages}")
+                        
+                        try:
+                            # Extract content with timeout
+                            html_content = await asyncio.wait_for(
+                                self.extract_page_content(file_content, page_index),
+                                timeout=120  # 2 minutes timeout for extraction
+                            )
+                            
+                            if html_content and len(html_content.strip()) > 0:
+                                max_chunk_size = self.get_max_chunk_size(to_lang)
+                                if len(html_content) > max_chunk_size * 1.2:
+                                    chunks = self.split_content_into_chunks(html_content, max_chunk_size, to_lang)
+                                    logger.info(f"[TRANSLATE] Split page {current_page} into {len(chunks)} chunks for {to_lang} translation")
+                                    
+                                    # Process chunks with timeout
+                                    chunk_results = await asyncio.wait_for(
+                                        asyncio.gather(*[
+                                            self.translate_chunk(chunk, from_lang, to_lang, retries=3, chunk_id=f"{process_id}-p{current_page}-c{i+1}")
+                                            for i, chunk in enumerate(chunks)
+                                        ]),
+                                        timeout=300  # 5 minutes timeout for translation
+                                    )
+                                    translated_content = self.combine_html_content(chunk_results)
+                                else:
+                                    chunk_id = f"{process_id}-p{current_page}"
+                                    translated_content = await asyncio.wait_for(
+                                        self.translate_chunk(html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id),
+                                        timeout=300  # 5 minutes timeout for translation
+                                    )
+                                
+                                logger.info(f"[TRANSLATE] Completed page {current_page}/{total_pages}")
+                                return (page_index, translated_content)
                             else:
-                                chunk_id = f"{process_id}-p{current_page}"
-                                translated_content = await self.translate_chunk(
-                                    html_content, from_lang, to_lang, retries=3, chunk_id=chunk_id
-                                )
-                            return (page_index, translated_content)
-                        else:
-                            logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
-                            return (page_index, None)
+                                logger.warning(f"[TRANSLATE] No content extracted from page {current_page}")
+                                return (page_index, None)
+                                
+                        except asyncio.TimeoutError:
+                            logger.error(f"[TRANSLATE] Timeout processing page {current_page}/{total_pages}")
+                            return (page_index, f"<div class='error'>Translation timeout for page {current_page}</div>")
+                        except Exception as e:
+                            logger.error(f"[TRANSLATE] Error processing page {current_page}/{total_pages}: {str(e)}")
+                            return (page_index, f"<div class='error'>Translation error for page {current_page}: {str(e)}</div>")
 
-                # Run extraction+translation for all pages in parallel
-                results = await asyncio.gather(*[
-                    extract_and_translate(page_index) for page_index in range(total_pages)
-                ])
-                # Sort results by page_index
+                # Create tasks for all pages
+                tasks = [extract_and_translate(page_index) for page_index in range(total_pages)]
+                
+                # Process pages with progress updates and error recovery
+                results = []
+                failed_pages = 0
+                
+                for i, task in enumerate(asyncio.as_completed(tasks)):
+                    try:
+                        result = await task
+                        results.append(result)
+                        
+                        # Check if the page failed
+                        if result and result[1] and result[1].startswith('<div class=\'error\'>'):
+                            failed_pages += 1
+                            logger.warning(f"[TRANSLATE] Page {result[0] + 1} failed, but continuing with other pages")
+                        
+                        # Update progress after each page completion
+                        await update_progress()
+                        
+                    except Exception as e:
+                        logger.error(f"[TRANSLATE] Critical error processing page: {str(e)}")
+                        failed_pages += 1
+                        # Add a failed result to maintain order
+                        results.append((i, f"<div class='error'>Critical error: {str(e)}</div>"))
+                        await update_progress()
+                
+                # Log summary of processing
+                successful_pages = len([r for r in results if r and r[1] and not r[1].startswith('<div class=\'error\'>')])
+                logger.info(f"[TRANSLATE] Processing summary: {successful_pages} successful, {failed_pages} failed out of {total_pages} total pages")
+                
+                # If too many pages failed, consider the translation failed
+                if failed_pages > total_pages * 0.5:  # More than 50% failed
+                    logger.error(f"[TRANSLATE] Too many pages failed ({failed_pages}/{total_pages}), marking translation as failed")
+                    self._update_translation_status_sync(db, process_id, "failed")
+                    return {
+                        "success": False,
+                        "error": f"Translation failed: {failed_pages} out of {total_pages} pages failed"
+                    }
+                
+                # Sort results by page_index to maintain order
                 results.sort(key=lambda x: x[0])
-                # Save translations sequentially
+                
+                # Save translations sequentially with final progress updates
+                logger.info(f"[TRANSLATE] Saving {len(results)} page results to database")
                 for page_index, translated_content in results:
                     if translated_content is not None:
                         translation_chunk = TranslationChunk(
@@ -1656,12 +1768,21 @@ Extract the content so it looks like in the initial document as much as possible
                         db.add(translation_chunk)
                         db.commit()
                         translated_pages.append(page_index)
+                        
+                        # Update progress during save phase (90-100%)
+                        save_progress = 90 + ((len(translated_pages) / total_pages) * 10)
+                        db.refresh(progress)
+                        progress.progress = save_progress
+                        db.commit()
+                        logger.info(f"[TRANSLATE] Saved page {page_index + 1}, progress: {save_progress:.1f}%")
+                
                 # Update progress to completed
                 if progress:
                     progress.status = "completed"
                     progress.progress = 100
                     progress.currentPage = total_pages
                     db.commit()
+                    logger.info(f"[TRANSLATE] Translation completed: {len(translated_pages)}/{total_pages} pages")
 
             elif file_type in settings.SUPPORTED_DOC_TYPES:
                 # Handle non-PDF document types
@@ -1839,8 +1960,9 @@ Extract the content so it looks like in the initial document as much as possible
                     progress.currentPage = total_pages
                     db.commit()
                     
-                # Log completion
+                # Log completion and track stats
                 duration = time.time() - start_time
+                self._track_translation_complete(process_id, True, duration)
                 logger.info(f"[TRANSLATE] Translation completed in {duration:.2f}s for {process_id}")
                 
                 return {
@@ -1859,6 +1981,11 @@ Extract the content so it looks like in the initial document as much as possible
         except Exception as e:
             logger.exception(f"[TRANSLATE] Translation error: {str(e)}")
             self._update_translation_status_sync(db, process_id, "failed")
+            
+            # Track failed translation
+            duration = time.time() - start_time
+            self._track_translation_complete(process_id, False, duration)
+            
             return {
                 "success": False,
                 "error": str(e)
@@ -1885,6 +2012,42 @@ Extract the content so it looks like in the initial document as much as possible
             if 'db' in locals() and db:
                 db.rollback()
             return False
+    
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get the health status of the translation service."""
+        return {
+            "active_translations": len(self.active_translations),
+            "stats": self.translation_stats.copy(),
+            "api_rate_limit": {
+                "last_call": self.last_api_call,
+                "interval": self.api_call_interval
+            },
+            "client_configured": self.client is not None
+        }
+    
+    def _track_translation_start(self, process_id: str):
+        """Track the start of a translation."""
+        self.active_translations[process_id] = {
+            "started_at": time.time(),
+            "status": "in_progress"
+        }
+        self.translation_stats["total_translations"] += 1
+    
+    def _track_translation_complete(self, process_id: str, success: bool, duration: float):
+        """Track the completion of a translation."""
+        if process_id in self.active_translations:
+            del self.active_translations[process_id]
+        
+        if success:
+            self.translation_stats["successful_translations"] += 1
+        else:
+            self.translation_stats["failed_translations"] += 1
+        
+        # Update average duration
+        total_completed = self.translation_stats["successful_translations"] + self.translation_stats["failed_translations"]
+        if total_completed > 0:
+            current_avg = self.translation_stats["average_duration"]
+            self.translation_stats["average_duration"] = (current_avg * (total_completed - 1) + duration) / total_completed
 
 # Create a singleton instance
 translation_service = TranslationService()

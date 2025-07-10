@@ -735,3 +735,32 @@ async def get_translation_result(
             "toLanguage": progress.toLang
         }
     }
+
+@router.get("/health", summary="Check translation service health")
+async def get_translation_health(
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get the health status of the translation service."""
+    try:
+        from app.services.translation import translation_service
+        
+        health_status = translation_service.get_health_status()
+        
+        # Add some additional system info
+        health_status.update({
+            "timestamp": datetime.now().isoformat(),
+            "user_id": current_user,
+            "database_connected": True  # If we got here, DB is working
+        })
+        
+        return {
+            "success": True,
+            "health": health_status
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Health check failed: {str(e)}"
+        }
